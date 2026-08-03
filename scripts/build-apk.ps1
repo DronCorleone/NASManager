@@ -3,6 +3,7 @@ param(
     [string]$JdkRoot = "D:\Unity\Hub\Editor\2022.3.62f2\Editor\Data\PlaybackEngines\AndroidPlayer\OpenJDK",
     [string]$Keystore = "",
     [string]$KeystorePassword = "",
+    [string]$KeystorePasswordFile = "",
     [string]$KeyAlias = "nasmanager"
 )
 
@@ -48,10 +49,23 @@ if ($LASTEXITCODE -ne 0) { throw "d8 failed" }
 
 $output = Join-Path $buildRoot "NASManager-v$versionName.apk"
 if ($Keystore) {
-    if (-not $KeystorePassword) { throw "KeystorePassword is required when Keystore is provided." }
+    if ($KeystorePassword -and $KeystorePasswordFile) {
+        throw "Use either KeystorePassword or KeystorePasswordFile, not both."
+    }
+    if ($KeystorePasswordFile) {
+        if (-not (Test-Path -LiteralPath $KeystorePasswordFile)) {
+            throw "Keystore password file was not found: $KeystorePasswordFile"
+        }
+        $passwordSource = "file:$((Resolve-Path -LiteralPath $KeystorePasswordFile).Path)"
+    } elseif ($KeystorePassword) {
+        $passwordSource = "pass:$KeystorePassword"
+    } else {
+        throw "KeystorePasswordFile or KeystorePassword is required when Keystore is provided."
+    }
     & "$buildTools\apksigner.bat" sign --ks $Keystore --ks-key-alias $KeyAlias `
-        --ks-pass "pass:$KeystorePassword" --key-pass "pass:$KeystorePassword" `
+        --ks-pass $passwordSource `
         --out $output "$buildRoot\NASManager-v$versionName-aligned.apk"
+    if ($LASTEXITCODE -ne 0) { throw "APK signing failed" }
 } else {
     Copy-Item "$buildRoot\NASManager-v$versionName-aligned.apk" $output
     Write-Warning "No keystore supplied: the resulting APK is unsigned."

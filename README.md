@@ -16,6 +16,8 @@
 
 ## Установка
 
+> **Переход с v1.0.0:** v1.1.0 подписана новым постоянным release-key. Android не сможет обновить v1.0.0 напрямую — удалите старую версию и затем установите v1.1.0. Последующие обновления будут совместимы с v1.1.0.
+
 1. Откройте [Releases](../../releases) и скачайте `NASManager-v1.1.0.apk`.
 2. Разрешите установку приложений из выбранного браузера или файлового менеджера.
 3. Установите APK и откройте **NAS Manager**.
@@ -50,11 +52,14 @@ gradle assembleDebug
 .\scripts\build-apk.ps1
 ```
 
-Для подписанной сборки передайте keystore:
+Для подписанной сборки безопаснее передать keystore и gitignored-файл с паролем:
 
 ```powershell
-.\scripts\build-apk.ps1 -Keystore C:\keys\nasmanager.jks -KeystorePassword '<password>'
+.\scripts\build-apk.ps1 -Keystore .\.secrets\nasmanager-release.p12 `
+    -KeystorePasswordFile .\.secrets\nasmanager-release.password.txt
 ```
+
+Новый ключ можно создать скриптом `.\scripts\create-release-key.ps1`. Секретные файлы сохраняются в `.secrets/`, который исключён из Git.
 
 Тест формирования Magic Packet:
 

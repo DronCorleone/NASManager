@@ -7,6 +7,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$versionName = "1.1.0"
+$versionCode = "2"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $buildRoot = Join-Path $projectRoot "build\manual"
 $appRoot = Join-Path $projectRoot "app"
@@ -29,7 +31,7 @@ New-Item -ItemType Directory -Force $buildRoot, "$buildRoot\gen", "$buildRoot\cl
 if ($LASTEXITCODE -ne 0) { throw "aapt2 compile failed" }
 & "$buildTools\aapt2.exe" link -o "$buildRoot\base-unsigned.apk" -I $androidJar `
     --manifest "$appRoot\src\main\AndroidManifest.xml" --java "$buildRoot\gen" `
-    --min-sdk-version 26 --target-sdk-version 34 --version-code 1 --version-name 1.0.0 `
+    --min-sdk-version 26 --target-sdk-version 34 --version-code $versionCode --version-name $versionName `
     --auto-add-overlay "$buildRoot\resources.zip"
 if ($LASTEXITCODE -ne 0) { throw "aapt2 link failed" }
 
@@ -42,16 +44,16 @@ $env:JAVA_HOME = $JdkRoot
 & "$buildTools\d8.bat" --lib $androidJar --min-api 26 --output "$buildRoot\dex" "$buildRoot\classes.jar"
 if ($LASTEXITCODE -ne 0) { throw "d8 failed" }
 & "$JdkRoot\bin\jar.exe" --update --file "$buildRoot\base-unsigned.apk" -C "$buildRoot\dex" classes.dex
-& "$buildTools\zipalign.exe" -f 4 "$buildRoot\base-unsigned.apk" "$buildRoot\NASManager-v1.0.0-aligned.apk"
+& "$buildTools\zipalign.exe" -f 4 "$buildRoot\base-unsigned.apk" "$buildRoot\NASManager-v$versionName-aligned.apk"
 
-$output = Join-Path $buildRoot "NASManager-v1.0.0.apk"
+$output = Join-Path $buildRoot "NASManager-v$versionName.apk"
 if ($Keystore) {
     if (-not $KeystorePassword) { throw "KeystorePassword is required when Keystore is provided." }
     & "$buildTools\apksigner.bat" sign --ks $Keystore --ks-key-alias $KeyAlias `
         --ks-pass "pass:$KeystorePassword" --key-pass "pass:$KeystorePassword" `
-        --out $output "$buildRoot\NASManager-v1.0.0-aligned.apk"
+        --out $output "$buildRoot\NASManager-v$versionName-aligned.apk"
 } else {
-    Copy-Item "$buildRoot\NASManager-v1.0.0-aligned.apk" $output
+    Copy-Item "$buildRoot\NASManager-v$versionName-aligned.apk" $output
     Write-Warning "No keystore supplied: the resulting APK is unsigned."
 }
 

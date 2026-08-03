@@ -11,7 +11,7 @@ final class DashboardData {
     int cpuCores = 1;
     int cpuPercent = -1;
     long memoryTotal;
-    long memoryUsed;
+    long memoryUsed = -1;
     long uptimeSeconds;
     final List<PoolInfo> pools = new ArrayList<>();
     final List<AppInfo> apps = new ArrayList<>();

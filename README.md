@@ -12,31 +12,37 @@
 - фильтрация алертов и Android-уведомления о новых событиях;
 - светлая, тёмная и системная темы;
 - русский, английский и системный язык;
-- шифрование API-ключа с помощью Android Keystore.
+- HTTP-подключение по локальной сети с логином и паролем;
+- опциональное HTTPS-подключение с API key (предпочтительно) или паролем;
+- шифрование пароля и API-ключа с помощью Android Keystore.
 
 ## Установка
 
-> **Переход с v1.0.0:** v1.1.0 подписана новым постоянным release-key. Android не сможет обновить v1.0.0 напрямую — удалите старую версию и затем установите v1.1.0. Последующие обновления будут совместимы с v1.1.0.
+> **Переход с v1.0.0:** релизы начиная с v1.1.0 подписаны новым постоянным release-key. Android не сможет обновить v1.0.0 напрямую — удалите старую версию перед установкой. v1.2.0 устанавливается поверх v1.1.0 штатно.
 
-1. Откройте [Releases](../../releases) и скачайте `NASManager-v1.1.0.apk`.
+1. Откройте [Releases](../../releases) и скачайте `NASManager-v1.2.0.apk`.
 2. Разрешите установку приложений из выбранного браузера или файлового менеджера.
 3. Установите APK и откройте **NAS Manager**.
 
 ## Настройка TrueNAS
 
-1. Настройте HTTPS-сертификат TrueNAS, которому доверяет Android. Подробности: [настройка сервера](SERVER_SETUP_RU.md).
-2. Создайте или сбросьте API key после завершения настройки HTTPS.
-3. В NAS Manager откройте **Настройки** и укажите HTTPS URL, имя владельца API key, сам ключ, MAC-адрес сетевой карты и broadcast-адрес локальной сети.
+Основной сценарий v1.2.0 — подключение внутри доверенной локальной сети:
+
+1. Создайте в TrueNAS отдельного служебного пользователя без двухфакторной аутентификации и выдайте ему только необходимые роли. Подробности: [настройка сервера](SERVER_SETUP_RU.md).
+2. В NAS Manager откройте **Настройки** и укажите `http://<локальный-IP>`, имя пользователя и его пароль.
+3. Укажите MAC-адрес сетевой карты и broadcast-адрес локальной сети.
 4. Нажмите **Проверить подключение**, затем **Сохранить**.
 5. Включите Wake-on-LAN в BIOS/UEFI сервера и в настройках сетевого адаптера.
 
-TrueNAS автоматически отзывает user-linked API key при попытке передать его через HTTP. NAS Manager 1.1.0 поэтому принимает для API только HTTPS и никогда не переключается на REST. Magic Packet обычно работает лишь внутри одной broadcast-сети; для доступа через интернет рекомендуется VPN, а не проброс UDP-порта.
+HTTP не шифрует имя пользователя, пароль и данные API в сети. Используйте этот режим только в доверенной изолированной LAN; для недоверенной Wi-Fi-сети или удалённого доступа сначала подключайтесь через VPN. Не публикуйте Web UI/API TrueNAS в интернет.
+
+HTTPS остаётся доступен как дополнительный режим: укажите `https://...`, имя пользователя и API key (предпочтительно) либо пароль. TrueNAS автоматически отзывает API key при попытке применить его через HTTP, поэтому приложение никогда не использует API key в HTTP-режиме. Magic Packet обычно работает лишь внутри одной broadcast-сети.
 
 ## Совместимость API
 
-Приложение рассчитано на TrueNAS SCALE 25.04+ и использует только JSON-RPC 2.0 через защищённый WebSocket `/api/current`. Аутентификация выполняется через `auth.login_ex` с `API_KEY_PLAIN`; имя пользователя обязательно. Deprecated REST `/api/v2.0` и `chart.release.*` не используются. Набор доступных операций зависит от ролей владельца API key.
+Приложение рассчитано на TrueNAS SCALE 25.04+ и использует JSON-RPC 2.0 через WebSocket `/api/current`: `ws://` для HTTP и `wss://` для HTTPS. В HTTP-режиме `auth.login_ex` использует `PASSWORD_PLAIN`; в HTTPS-режиме предпочтителен `API_KEY_PLAIN`, а пароль доступен как резервный способ. Deprecated REST `/api/v2.0` и `chart.release.*` не используются. Набор доступных операций зависит от ролей пользователя.
 
-Полезные официальные ссылки: [TrueNAS API Reference](https://www.truenas.com/docs/scale/api/), [JSON-RPC protocol](https://api.truenas.com/v26.0/jsonrpc.html), [TrueNAS API client](https://github.com/truenas/api_client).
+Полезные официальные ссылки: [TrueNAS API Reference](https://www.truenas.com/docs/scale/25.10/api/), [JSON-RPC protocol](https://api.truenas.com/v25.10/jsonrpc.html), [TrueNAS API client](https://github.com/truenas/api_client).
 
 ## Сборка
 
@@ -69,11 +75,11 @@ gradle assembleDebug
 
 ## Security
 
-API key шифруется AES-GCM ключом из Android Keystore, не попадает в backup и отправляется только указанному пользователем TrueNAS. Cleartext HTTP запрещён. Приложение доверяет системным сертификатам Android и установленным пользователем локальным центрам сертификации; проверка имени сервера остаётся обязательной.
+Пароль и API key шифруются AES-GCM ключом из Android Keystore и не попадают в backup. Cleartext HTTP разрешён только для выбранного пользователем локального TrueNAS и использует пароль — API key по HTTP не отправляется. Сам HTTP не обеспечивает конфиденциальность трафика. Для HTTPS приложение доверяет системным сертификатам Android и установленным пользователем локальным центрам сертификации; проверка имени сервера остаётся обязательной.
 
 ## English
 
-NAS Manager is a native Android client for TrueNAS SCALE. It provides Wake-on-LAN, API-based status and safe shutdown, configurable pool/resource/app/alert dashboards, app lifecycle and update actions, system notifications, light/dark themes, and English/Russian localization. Configure the TrueNAS URL, API key, server MAC and LAN broadcast address in **Settings**. Android 8.0+ is supported.
+NAS Manager is a native Android client for TrueNAS SCALE. It provides Wake-on-LAN, API-based status and safe shutdown, configurable pool/resource/app/alert dashboards, app lifecycle and update actions, system notifications, light/dark themes, and English/Russian localization. Local HTTP is the primary mode and authenticates with a username/password; use it only on a trusted LAN or through VPN. Optional HTTPS prefers a username/API key and supports password fallback. Android 8.0+ is supported.
 
 ## License
 

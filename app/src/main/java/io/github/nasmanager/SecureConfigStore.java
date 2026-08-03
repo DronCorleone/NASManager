@@ -28,6 +28,7 @@ final class SecureConfigStore {
         AppConfig config = new AppConfig();
         config.serverUrl = preferences.getString("server_url", "");
         config.username = preferences.getString("username", "");
+        config.password = decrypt(preferences.getString("password", ""));
         config.apiKey = decrypt(preferences.getString("api_key", ""));
         config.macAddress = preferences.getString("mac", "");
         config.broadcastAddress = preferences.getString("broadcast", "255.255.255.255");
@@ -46,6 +47,7 @@ final class SecureConfigStore {
         preferences.edit()
                 .putString("server_url", config.normalizedUrl())
                 .putString("username", config.username.trim())
+                .putString("password", encrypt(config.password))
                 .putString("api_key", encrypt(config.apiKey))
                 .putString("mac", config.macAddress.trim().toUpperCase(Locale.US))
                 .putString("broadcast", config.broadcastAddress.trim())

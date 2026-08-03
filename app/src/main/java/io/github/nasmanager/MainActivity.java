@@ -348,11 +348,13 @@ public final class MainActivity extends Activity {
         content.addView(connectionTitle, headingParams());
         EditText url = input(getString(R.string.server_url_hint), config.serverUrl, false);
         EditText username = input(getString(R.string.username_hint), config.username, false);
+        EditText password = input(getString(R.string.password_hint), config.password, true);
         EditText apiKey = input(getString(R.string.api_key_hint), config.apiKey, true);
         EditText mac = input(getString(R.string.mac_hint), config.macAddress, false);
         EditText broadcast = input(getString(R.string.broadcast_hint), config.broadcastAddress, false);
         addField(getString(R.string.server_url), url);
         addField(getString(R.string.username), username);
+        addField(getString(R.string.password), password);
         addField(getString(R.string.api_key), apiKey);
         TextView connectionRequirements = label(getString(R.string.connection_requirements), 12, muted, false);
         connectionRequirements.setPadding(dp(2), dp(8), dp(2), dp(8));
@@ -404,6 +406,7 @@ public final class MainActivity extends Activity {
         Runnable readForm = () -> {
             config.serverUrl = url.getText().toString();
             config.username = username.getText().toString();
+            config.password = password.getText().toString();
             config.apiKey = apiKey.getText().toString();
             config.macAddress = mac.getText().toString();
             config.broadcastAddress = broadcast.getText().toString();

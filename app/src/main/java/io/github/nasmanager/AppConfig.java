@@ -7,6 +7,7 @@ import java.net.URISyntaxException;
 final class AppConfig {
     String serverUrl = "";
     String username = "";
+    String password = "";
     String apiKey = "";
     String macAddress = "";
     String broadcastAddress = "255.255.255.255";
@@ -20,36 +21,91 @@ final class AppConfig {
     boolean notifyAlerts = true;
 
     boolean isApiConfigured() {
-        return !serverUrl.trim().isEmpty() && !apiKey.trim().isEmpty();
+        if (username == null || username.trim().isEmpty()) return false;
+        try {
+            parseServerUri();
+            return usesApiKeyAuthentication()
+                    ? apiKey != null && !apiKey.trim().isEmpty()
+                    : password != null && !password.isEmpty();
+        } catch (IOException ignored) {
+            return false;
+        }
     }
 
     String normalizedUrl() {
         String value = serverUrl.trim();
+        if (!value.isEmpty() && !value.contains("://")) value = "http://" + value;
         while (value.endsWith("/")) value = value.substring(0, value.length() - 1);
         return value;
     }
 
     /**
-     * Returns the configured API origin after enforcing the transport guarantees required for
-     * password-equivalent API keys. TrueNAS revokes keys presented over HTTP, so this check must
-     * happen before either the WebSocket or legacy REST transport opens a connection.
+     * Returns the configured API origin. HTTP is intentionally supported for trusted LANs, but it
+     * must use username/password authentication: TrueNAS revokes API keys presented over HTTP.
+     * HTTPS keeps API-key authentication and full Android certificate/hostname verification.
      */
-    URI requireSecureServerUri() throws IOException {
-        if (!isApiConfigured()) throw new IOException("TrueNAS is not configured");
+    URI requireServerUri() throws IOException {
+        URI uri = parseServerUri();
+        if (username == null || username.trim().isEmpty()) {
+            throw new IOException("TrueNAS username is required");
+        }
+        if ("http".equalsIgnoreCase(uri.getScheme())) {
+            if (password == null || password.isEmpty()) {
+                throw new IOException("TrueNAS password is required for an HTTP connection. API keys are never sent over HTTP because TrueNAS revokes them.");
+            }
+        } else if ((apiKey == null || apiKey.trim().isEmpty())
+                && (password == null || password.isEmpty())) {
+            throw new IOException("TrueNAS API key or password is required for an HTTPS connection");
+        }
+        return uri;
+    }
+
+    boolean usesPasswordAuthentication() {
+        try {
+            URI uri = parseServerUri();
+            return "http".equalsIgnoreCase(uri.getScheme())
+                    || ("https".equalsIgnoreCase(uri.getScheme())
+                    && (apiKey == null || apiKey.trim().isEmpty()));
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    boolean usesApiKeyAuthentication() {
+        try {
+            return "https".equalsIgnoreCase(parseServerUri().getScheme())
+                    && apiKey != null && !apiKey.trim().isEmpty();
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    String authenticationMechanism() {
+        return usesPasswordAuthentication() ? "PASSWORD_PLAIN" : "API_KEY_PLAIN";
+    }
+
+    String authenticationSecretField() {
+        return usesPasswordAuthentication() ? "password" : "api_key";
+    }
+
+    private URI parseServerUri() throws IOException {
+        if (serverUrl == null || serverUrl.trim().isEmpty()) {
+            throw new IOException("TrueNAS server URL is required");
+        }
         final URI uri;
         try {
             uri = new URI(normalizedUrl());
         } catch (URISyntaxException error) {
             throw new IOException("Invalid TrueNAS server URL", error);
         }
-        if (!"https".equalsIgnoreCase(uri.getScheme())) {
-            throw new IOException("TrueNAS API keys require HTTPS. Configure an https:// URL before connecting; HTTP would revoke the key.");
+        if (!"http".equalsIgnoreCase(uri.getScheme()) && !"https".equalsIgnoreCase(uri.getScheme())) {
+            throw new IOException("TrueNAS server URL must use http:// or https://");
         }
         if (uri.getHost() == null || uri.getHost().trim().isEmpty()) {
             throw new IOException("Invalid TrueNAS server URL: host is missing");
         }
         if (uri.getRawUserInfo() != null || uri.getRawQuery() != null || uri.getRawFragment() != null) {
-            throw new IOException("TrueNAS server URL must contain only the HTTPS origin (for example https://nas.example.com)");
+            throw new IOException("TrueNAS server URL must contain only the origin (for example http://192.168.1.10)");
         }
         String path = uri.getRawPath();
         if (path != null && !path.isEmpty() && !"/".equals(path)) {

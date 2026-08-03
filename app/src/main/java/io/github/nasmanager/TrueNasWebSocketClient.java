@@ -64,17 +64,21 @@ final class TrueNasWebSocketClient implements AutoCloseable {
     }
 
     TrueNasWebSocketClient(AppConfig config) throws Exception {
-        URI server = config.requireSecureServerUri();
-        if (config.username == null || config.username.trim().isEmpty()) {
-            throw new IOException("TrueNAS username is required for auth.login_ex (use the username that owns the API key).");
+        URI server = config.requireServerUri();
+        boolean secure = "https".equalsIgnoreCase(server.getScheme());
+        int port = server.getPort() > 0 ? server.getPort() : secure ? 443 : 80;
+        URI uri = new URI(secure ? "wss" : "ws", null, server.getHost(), port,
+                "/api/current", null, null);
+        try {
+            connect(uri);
+            login(config);
+            // Explicitly select the JSON-RPC 2.0 job behavior documented for /api/current. With
+            // legacy_jobs disabled, the original call completes with the job's final result/error.
+            call("core.set_options", new JSONArray().put(new JSONObject().put("legacy_jobs", false)));
+        } catch (Exception error) {
+            close();
+            throw error;
         }
-        int port = server.getPort() > 0 ? server.getPort() : 443;
-        URI uri = new URI("wss", null, server.getHost(), port, "/api/current", null, null);
-        connect(uri);
-        login(config);
-        // Explicitly select the JSON-RPC 2.0 job behavior documented for /api/current. With
-        // legacy_jobs disabled, the original call completes with the job's final result/error.
-        call("core.set_options", new JSONArray().put(new JSONObject().put("legacy_jobs", false)));
     }
 
     Object call(String method, JSONArray params) throws Exception {
@@ -125,18 +129,37 @@ final class TrueNasWebSocketClient implements AutoCloseable {
     }
 
     private void login(AppConfig config) throws Exception {
+        boolean passwordLogin = config.usesPasswordAuthentication();
         JSONObject loginData = new JSONObject()
-                .put("mechanism", "API_KEY_PLAIN")
+                .put("mechanism", config.authenticationMechanism())
                 .put("username", config.username.trim())
-                .put("api_key", config.apiKey)
+                // Never put an API key on an insecure WebSocket. TrueNAS revokes keys used over
+                // HTTP; the supported LAN alternative is username/password authentication.
+                .put(config.authenticationSecretField(),
+                        passwordLogin ? config.password : config.apiKey)
                 // v25.10 rejects unknown login_options properties. reconnect_token is a
-                // response field in older docs, not a supported API_KEY_PLAIN input option.
+                // response field in older docs, not a supported input option here.
                 .put("login_options", new JSONObject().put("user_info", false));
         Object result = call("auth.login_ex", new JSONArray().put(loginData));
         JSONObject object = result instanceof JSONObject ? (JSONObject) result : null;
         if (object == null || !"SUCCESS".equalsIgnoreCase(object.optString("response_type"))) {
             String responseType = object == null ? "invalid response" : object.optString("response_type", "unknown response");
-            throw new IOException("TrueNAS authentication failed: " + responseType);
+            String credential = passwordLogin ? "username or password" : "username or API key";
+            if ("AUTH_ERR".equalsIgnoreCase(responseType)) {
+                throw new IOException("TrueNAS authentication failed: invalid " + credential + ".");
+            }
+            if ("EXPIRED".equalsIgnoreCase(responseType)) {
+                throw new IOException("TrueNAS authentication failed: the supplied credential has expired.");
+            }
+            if ("OTP_REQUIRED".equalsIgnoreCase(responseType)) {
+                throw new IOException("TrueNAS authentication requires a one-time password, which is not supported by this connection mode.");
+            }
+            if ("REDIRECT".equalsIgnoreCase(responseType)) {
+                JSONArray urls = object.optJSONArray("urls");
+                String destination = urls == null || urls.length() == 0 ? "another server" : urls.optString(0, "another server");
+                throw new IOException("TrueNAS authentication must be completed on " + destination + ".");
+            }
+            throw new IOException("TrueNAS authentication failed (" + credential + "): " + responseType);
         }
     }
 
@@ -144,20 +167,24 @@ final class TrueNasWebSocketClient implements AutoCloseable {
         Socket plain = new Socket();
         plain.connect(new InetSocketAddress(uri.getHost(), uri.getPort()), 7000);
         plain.setSoTimeout(15000);
-        try {
-            // Use Android's application-aware default TLS factory so its Network Security Config
-            // trust anchors are honored. Hostname verification is still explicitly enabled below.
-            SSLSocket ssl = (SSLSocket) HttpsURLConnection.getDefaultSSLSocketFactory()
-                    .createSocket(plain, uri.getHost(), uri.getPort(), true);
-            ssl.setUseClientMode(true);
-            SSLParameters parameters = ssl.getSSLParameters();
-            parameters.setEndpointIdentificationAlgorithm("HTTPS");
-            ssl.setSSLParameters(parameters);
-            ssl.startHandshake();
-            socket = ssl;
-        } catch (SSLHandshakeException error) {
-            try { plain.close(); } catch (Exception ignored) { }
-            throw new IOException("TLS certificate validation failed. Use a certificate trusted by Android and a server name present in that certificate.", error);
+        if ("wss".equalsIgnoreCase(uri.getScheme())) {
+            try {
+                // Use Android's application-aware default TLS factory so its Network Security
+                // Config trust anchors are honored. Hostname verification stays enabled.
+                SSLSocket ssl = (SSLSocket) HttpsURLConnection.getDefaultSSLSocketFactory()
+                        .createSocket(plain, uri.getHost(), uri.getPort(), true);
+                ssl.setUseClientMode(true);
+                SSLParameters parameters = ssl.getSSLParameters();
+                parameters.setEndpointIdentificationAlgorithm("HTTPS");
+                ssl.setSSLParameters(parameters);
+                ssl.startHandshake();
+                socket = ssl;
+            } catch (SSLHandshakeException error) {
+                try { plain.close(); } catch (Exception ignored) { }
+                throw new IOException("TLS certificate validation failed. Use a certificate trusted by Android and a server name present in that certificate.", error);
+            }
+        } else {
+            socket = plain;
         }
         input = new BufferedInputStream(socket.getInputStream());
         output = new BufferedOutputStream(socket.getOutputStream());

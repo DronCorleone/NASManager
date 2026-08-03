@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- API keys are password-equivalent and TrueNAS revokes them over HTTP. -->
-    <base-config cleartextTrafficPermitted="false">
+    <!-- HTTP is supported for explicitly configured local TrueNAS servers. API keys are never
+         sent over cleartext; HTTP sessions authenticate with username/password instead. -->
+    <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
             <!-- Allows an administrator-installed private CA without disabling TLS checks. -->

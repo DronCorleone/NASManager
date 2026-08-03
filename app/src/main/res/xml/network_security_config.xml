@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Private TrueNAS installations commonly use HTTP or a local CA. -->
-    <base-config cleartextTrafficPermitted="true" />
+    <!-- API keys are password-equivalent and TrueNAS revokes them over HTTP. -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <!-- Allows an administrator-installed private CA without disabling TLS checks. -->
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
 </network-security-config>

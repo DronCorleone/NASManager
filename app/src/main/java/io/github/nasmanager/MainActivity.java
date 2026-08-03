@@ -26,6 +26,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.Locale;
+import java.time.ZoneId;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -208,14 +209,17 @@ public final class MainActivity extends Activity {
     private void renderResourceCard() {
         LinearLayout card = cardWithTitle(getString(R.string.resources));
         double load = dashboard.loadAverage[0];
-        int cpuPercent = dashboard.cpuPercent >= 0 ? dashboard.cpuPercent
-                : (int) Math.min(100, Math.round(load * 100 / Math.max(1, dashboard.cpuCores)));
-        addMetric(card, getString(R.string.cpu_load), cpuPercent + "%", cpuPercent);
-        int memoryPercent = dashboard.memoryTotal <= 0 ? 0
-                : (int) Math.min(100, dashboard.memoryUsed * 100 / dashboard.memoryTotal);
+        int cpuPercent = DashboardUiFormatter.cpuPercent(dashboard.cpuPercent);
+        addMetric(card, getString(R.string.cpu_load),
+                cpuPercent < 0 ? getString(R.string.no_data) : cpuPercent + "%", cpuPercent);
+        card.addView(label(getString(R.string.load_average_hint), 12, muted, false));
+        addKeyValue(card, getString(R.string.load_average),
+                DashboardUiFormatter.formatLoadAverage(load, Locale.getDefault()));
+        int memoryPercent = DashboardUiFormatter.percentage(dashboard.memoryUsed, dashboard.memoryTotal);
         String memory = dashboard.memoryTotal <= 0 ? getString(R.string.no_data)
-                : dashboard.memoryUsed <= 0 ? formatBytes(dashboard.memoryTotal)
-                : getString(R.string.used_of, formatBytes(dashboard.memoryUsed), formatBytes(dashboard.memoryTotal));
+                : memoryPercent < 0 ? getString(R.string.total_memory, formatBytes(dashboard.memoryTotal))
+                : getString(R.string.used_of_percent, formatBytes(dashboard.memoryUsed),
+                        formatBytes(dashboard.memoryTotal), Math.max(0, memoryPercent));
         addMetric(card, getString(R.string.memory), memory, memoryPercent);
         long hours = dashboard.uptimeSeconds / 3600;
         addKeyValue(card, getString(R.string.uptime), getString(R.string.hours_short, hours, (dashboard.uptimeSeconds % 3600) / 60));
@@ -325,13 +329,15 @@ public final class MainActivity extends Activity {
             LinearLayout heading = row();
             int severityColor = severityColor(alert.level);
             heading.addView(badge(alert.level, severityColor));
-            TextView date = label(shortDate(alert.date), 12, muted, false);
+            TextView date = label(DashboardUiFormatter.formatAlertDate(
+                    alert.date, Locale.getDefault(), ZoneId.systemDefault()), 12, muted, false);
             date.setGravity(Gravity.END);
             heading.addView(date, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             card.addView(heading);
             TextView title = label(alert.title, 17, text, true);
             card.addView(title, sectionParams());
-            if (!alert.message.isEmpty()) card.addView(label(alert.message, 14, muted, false));
+            String alertMessage = DashboardUiFormatter.cleanAlertText(alert.message);
+            if (!alertMessage.isEmpty()) card.addView(label(alertMessage, 14, muted, false));
             content.addView(card, cardParams());
         }
         if (visible == 0) emptyState(getString(R.string.no_alerts));
@@ -348,6 +354,9 @@ public final class MainActivity extends Activity {
         addField(getString(R.string.server_url), url);
         addField(getString(R.string.username), username);
         addField(getString(R.string.api_key), apiKey);
+        TextView connectionRequirements = label(getString(R.string.connection_requirements), 12, muted, false);
+        connectionRequirements.setPadding(dp(2), dp(8), dp(2), dp(8));
+        content.addView(connectionRequirements);
         addField(getString(R.string.mac_address), mac);
         addField(getString(R.string.broadcast_address), broadcast);
 
@@ -421,12 +430,18 @@ public final class MainActivity extends Activity {
             readForm.run();
             test.setEnabled(false);
             executor.execute(() -> {
-                boolean ok = new TrueNasClient(config).testConnection();
-                runOnUiThread(() -> {
-                    test.setEnabled(true);
-                    toast(ok ? getString(R.string.connection_ok)
-                            : getString(R.string.connection_failed, "HTTP/API"));
-                });
+                try {
+                    new TrueNasClient(config).loadDashboard();
+                    runOnUiThread(() -> {
+                        test.setEnabled(true);
+                        toast(R.string.connection_ok);
+                    });
+                } catch (Exception error) {
+                    runOnUiThread(() -> {
+                        test.setEnabled(true);
+                        showConnectionError(error);
+                    });
+                }
             });
         });
     }
@@ -487,7 +502,7 @@ public final class MainActivity extends Activity {
                 new TrueNasClient(config).shutdown();
                 runOnUiThread(() -> toast(R.string.action_started));
             } catch (Exception error) {
-                runOnUiThread(() -> toast(getString(R.string.action_failed, friendlyError(error))));
+                runOnUiThread(() -> showActionError(getString(R.string.shutdown), error));
             }
         });
     }
@@ -503,7 +518,7 @@ public final class MainActivity extends Activity {
                 else client.updateApp(app.name);
                 runOnUiThread(this::refreshDashboard);
             } catch (Exception error) {
-                runOnUiThread(() -> toast(getString(R.string.action_failed, friendlyError(error))));
+                runOnUiThread(() -> showActionError(localizedAction(action) + " — " + app.displayName, error));
             }
         });
     }
@@ -549,11 +564,19 @@ public final class MainActivity extends Activity {
         return state;
     }
 
+    private String localizedAction(String action) {
+        if ("start".equals(action)) return getString(R.string.start);
+        if ("stop".equals(action)) return getString(R.string.stop);
+        if ("deploy".equals(action)) return getString(R.string.deploy);
+        return getString(R.string.update);
+    }
+
     private void addMetric(LinearLayout parent, String name, String value, int percent) {
         LinearLayout heading = row();
         heading.addView(label(name, 14, muted, false), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         heading.addView(label(value, 14, text, true));
         parent.addView(heading, sectionParams());
+        if (percent < 0) return;
         ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(100);
         progress.setProgress(Math.max(0, Math.min(100, percent)));
@@ -778,15 +801,28 @@ public final class MainActivity extends Activity {
         return String.format(Locale.getDefault(), value >= 10 ? "%.0f %s" : "%.1f %s", value, units[unit]);
     }
 
-    private static String shortDate(String raw) {
-        if (raw == null || raw.isEmpty()) return "";
-        return raw.length() > 16 ? raw.substring(0, 16).replace('T', ' ') : raw;
+    private void showActionError(String operation, Exception error) {
+        TextView details = label(getString(R.string.action_failed_detail,
+                operation, DashboardUiFormatter.friendlyError(error)), 14, text, false);
+        details.setTextIsSelectable(true);
+        details.setPadding(dp(24), dp(8), dp(24), 0);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.action_failed_title)
+                .setView(details)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
     }
 
-    private static String friendlyError(Exception error) {
-        String message = error.getMessage();
-        if (message == null || message.trim().isEmpty()) return error.getClass().getSimpleName();
-        return message.length() > 120 ? message.substring(0, 120) + "…" : message;
+    private void showConnectionError(Exception error) {
+        TextView details = label(getString(R.string.connection_failed_detail,
+                DashboardUiFormatter.friendlyError(error)), 14, text, false);
+        details.setTextIsSelectable(true);
+        details.setPadding(dp(24), dp(8), dp(24), 0);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.connection_failed_title)
+                .setView(details)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
     }
 
     private void toast(int message) {

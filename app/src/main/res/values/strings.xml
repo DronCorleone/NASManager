@@ -8,6 +8,8 @@
     <string name="server_offline">Server offline</string>
     <string name="server_checking">Checking server…</string>
     <string name="last_update">Updated: %1$s</string>
+    <string name="last_ping">Ping: %1$s</string>
+    <string name="ping_latency_ms">%1$d ms</string>
     <string name="never">never</string>
     <string name="wake">Wake</string>
     <string name="shutdown">Shut down</string>
@@ -66,6 +68,18 @@
     <string name="notifications">System notifications</string>
     <string name="notify_alerts">Notify about new alerts</string>
     <string name="minimum_severity">Minimum alert severity</string>
+    <string name="power_schedule">Power schedule</string>
+    <string name="power_schedule_hint">Daily times use the phone’s current local time zone. On Android 12+, “Alarms &amp; reminders” access is required.</string>
+    <string name="scheduled_wake">Wake server daily</string>
+    <string name="scheduled_shutdown">Shut down server daily</string>
+    <string name="choose_time">Choose time</string>
+    <string name="exact_alarm_title">Allow exact schedules?</string>
+    <string name="exact_alarm_message">Allow “Alarms &amp; reminders” for NAS Manager so daily wake and shutdown actions can run at the selected minute. Schedules stay inactive without this access.</string>
+    <string name="exact_alarm_required">Exact alarm access required</string>
+    <string name="schedule_wake_requires_mac">Enter the server MAC address before enabling scheduled wake.</string>
+    <string name="schedule_shutdown_requires_connection">Configure and save the TrueNAS connection before enabling scheduled shutdown.</string>
+    <string name="open_settings">Open settings</string>
+    <string name="later">Later</string>
     <string name="severity_info">Info</string>
     <string name="severity_warning">Warning</string>
     <string name="severity_critical">Critical</string>
@@ -88,7 +102,7 @@
     <string name="confirm">Confirm</string>
     <string name="not_configured">For HTTP, enter the server URL, username and password. For HTTPS, also enter credentials: an API key is preferred, or use the password fallback.</string>
     <string name="privacy_note">The password and API key are encrypted with Android Keystore. HTTP does not encrypt network traffic: use it only on a trusted local network or through VPN. HTTPS remains available for encrypted connections.</string>
-    <string name="version_label">Version 1.2.0</string>
+    <string name="version_label">Version 1.3.0</string>
     <string name="active_apps">%1$d running / %2$d total</string>
     <string name="active_alerts">%1$d active alerts</string>
     <string name="hours_short">%1$dh %2$dm</string>

@@ -8,8 +8,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$versionName = "1.3.0"
-$versionCode = "4"
+$versionName = "1.4.0"
+$versionCode = "5"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $buildRoot = Join-Path $projectRoot "build\manual"
 $appRoot = Join-Path $projectRoot "app"

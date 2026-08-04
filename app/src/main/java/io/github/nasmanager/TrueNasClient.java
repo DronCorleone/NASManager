@@ -4,7 +4,11 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 final class TrueNasClient {
     private final AppConfig config;
@@ -22,17 +26,30 @@ final class TrueNasClient {
         try (TrueNasWebSocketClient client = new TrueNasWebSocketClient(config)) {
             JSONObject system = asObject(client.call("system.info", new JSONArray()));
             parseSystem(result, system);
+            JSONArray query = new JSONArray().put(new JSONArray()).put(new JSONObject());
+            try { parsePools(result, asArray(client.call("pool.query", query))); } catch (Exception ignored) { }
+            try { parseApps(result, asArray(client.call("app.query", query))); } catch (Exception ignored) { }
+            try { parseInterfaces(result, asArray(client.call("interface.query", query))); } catch (Exception ignored) { }
+            try { parseAlerts(result, asArray(client.call("alert.list", new JSONArray()))); } catch (Exception ignored) { }
+
             boolean realtimeSubscribed = false;
+            boolean appStatsSubscribed = false;
             try {
                 client.call("core.subscribe", new JSONArray().put("reporting.realtime:{\"interval\":2}"));
                 realtimeSubscribed = true;
             } catch (Exception ignored) { }
-            JSONArray query = new JSONArray().put(new JSONArray()).put(new JSONObject());
-            try { parsePools(result, asArray(client.call("pool.query", query))); } catch (Exception ignored) { }
-            try { parseApps(result, asArray(client.call("app.query", query))); } catch (Exception ignored) { }
-            try { parseAlerts(result, asArray(client.call("alert.list", new JSONArray()))); } catch (Exception ignored) { }
+            try {
+                client.call("core.subscribe", new JSONArray().put("app.stats:{\"interval\":2}"));
+                appStatsSubscribed = true;
+            } catch (Exception ignored) { }
             if (realtimeSubscribed) {
                 try { parseRealtime(result, client.nextEvent("reporting.realtime")); } catch (Exception ignored) { }
+            }
+            if (appStatsSubscribed) {
+                try {
+                    TrueNasDataParser.mergeAppStats(result,
+                            TrueNasDataParser.parseAppStats(toJava(client.nextEventFields("app.stats"))));
+                } catch (Exception ignored) { }
             }
         }
         return result;
@@ -113,35 +130,15 @@ final class TrueNasClient {
     }
 
     private void parseRealtime(DashboardData target, JSONObject realtime) {
-        JSONObject memory = realtime.optJSONObject("memory");
-        if (memory != null) {
-            long total = firstLong(memory, "total", "physical_memory_total", 0);
-            long available = firstLong(memory, "available", "physical_memory_available", 0);
-            long used = firstLong(memory, "used", "physical_memory_used", 0);
-            if (total > 0) target.memoryTotal = total;
-            target.memoryUsed = used > 0 ? used : Math.max(0, target.memoryTotal - available);
-        }
-        JSONObject cpu = realtime.optJSONObject("cpu");
-        if (cpu != null) {
-            JSONObject aggregate = cpu.optJSONObject("cpu");
-            double value = aggregate == null ? firstDouble(cpu, "usage", "average", -1)
-                    : firstDouble(aggregate, "usage", "average", -1);
-            if (value >= 0) target.cpuPercent = (int) Math.round(value);
-        }
+        TrueNasDataParser.parseRealtime(target, castMap(toJava(realtime)));
     }
 
     private void parseApps(DashboardData target, JSONArray array) {
-        for (int i = 0; i < array.length(); i++) {
-            JSONObject source = array.optJSONObject(i);
-            if (source == null) continue;
-            DashboardData.AppInfo app = new DashboardData.AppInfo();
-            app.name = firstString(source, "id", "name", "app-" + i);
-            app.displayName = firstString(source, "name", "human_name", app.name);
-            app.state = firstString(source, "state", "status", "UNKNOWN").toUpperCase(Locale.US);
-            app.updateAvailable = source.optBoolean("upgrade_available",
-                    source.optBoolean("image_updates_available", source.optBoolean("update_available", false)));
-            target.apps.add(app);
-        }
+        TrueNasDataParser.parseApps(target, castList(toJava(array)));
+    }
+
+    private void parseInterfaces(DashboardData target, JSONArray array) {
+        TrueNasDataParser.parseInterfaces(target, castList(toJava(array)));
     }
 
     private void parseAlerts(DashboardData target, JSONArray array) {
@@ -182,8 +179,35 @@ final class TrueNasClient {
         return object.optLong(second, fallback);
     }
 
-    private static double firstDouble(JSONObject object, String first, String second, double fallback) {
-        double value = object.optDouble(first, Double.NaN);
-        return Double.isNaN(value) ? object.optDouble(second, fallback) : value;
+    /** Converts org.json values to ordinary maps/lists consumed by the pure parser. */
+    static Object toJava(Object value) {
+        if (value == null || value == JSONObject.NULL) return null;
+        if (value instanceof JSONObject) {
+            JSONObject object = (JSONObject) value;
+            Map<String, Object> result = new LinkedHashMap<>();
+            java.util.Iterator<String> keys = object.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                result.put(key, toJava(object.opt(key)));
+            }
+            return result;
+        }
+        if (value instanceof JSONArray) {
+            JSONArray array = (JSONArray) value;
+            List<Object> result = new ArrayList<>();
+            for (int i = 0; i < array.length(); i++) result.add(toJava(array.opt(i)));
+            return result;
+        }
+        return value;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<?, ?> castMap(Object value) {
+        return value instanceof Map ? (Map<?, ?>) value : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<?> castList(Object value) {
+        return value instanceof List ? (List<?>) value : java.util.Collections.emptyList();
     }
 }

@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.TimePickerDialog;
 import android.content.Intent;
+import android.net.Uri;
 import android.content.res.Configuration;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
@@ -18,10 +19,13 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.OvershootInterpolator;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -45,6 +49,7 @@ public final class MainActivity extends Activity {
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ExecutorService pingExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService appStatsExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private SecureConfigStore store;
     private AppConfig config;
@@ -53,19 +58,32 @@ public final class MainActivity extends Activity {
     private LinearLayout navigation;
     private TextView titleView;
     private ScrollView mainScroll;
+    private TextView pullIndicator;
     private TextView serverDotView;
     private TextView serverStateView;
     private TextView lastPingView;
     private Button shutdownButton;
     private Tab currentTab = Tab.OVERVIEW;
     private boolean refreshing;
+    private int dashboardGeneration;
     private boolean pingInFlight;
+    private boolean pingRequested;
     private boolean pingLoopActive;
     private Boolean pingReachable;
     private long lastPingEpochMillis;
     private long lastPingLatencyMillis = -1L;
     private float pullStartY;
     private boolean pullFromTop;
+    private DashboardData.AppInfo selectedApp;
+    private String pendingAppDetailName;
+    private volatile AppStatsMonitor appStatsMonitor;
+    private volatile int appStatsGeneration;
+    private TextView detailCpu;
+    private TextView detailMemory;
+    private TextView detailNetwork;
+    private TextView detailBlock;
+    private SparklineView networkGraph;
+    private SparklineView blockGraph;
     private boolean exactAlarmSettingsOpened;
     private boolean dark;
     private int background;
@@ -98,6 +116,8 @@ public final class MainActivity extends Activity {
     protected void onDestroy() {
         mainHandler.removeCallbacks(pingTick);
         pingExecutor.shutdownNow();
+        stopAppStats();
+        appStatsExecutor.shutdownNow();
         executor.shutdownNow();
         super.onDestroy();
     }
@@ -115,11 +135,13 @@ public final class MainActivity extends Activity {
             ScheduleManager.sync(this, config);
         }
         startPingLoop();
+        if (selectedApp != null) startAppStats(selectedApp);
     }
 
     @Override
     protected void onPause() {
         stopPingLoop();
+        stopAppStats();
         super.onPause();
     }
 
@@ -166,10 +188,19 @@ public final class MainActivity extends Activity {
         titleView = label(getString(R.string.app_name), 23, text, true);
         header.addView(titleView, new LinearLayout.LayoutParams(0, dp(48), 1));
         Button refresh = iconButton("↻");
-        refresh.setContentDescription(getString(R.string.refresh));
+        refresh.setContentDescription(getString(R.string.reconnect_dashboard));
         refresh.setOnClickListener(v -> fullRefresh());
         header.addView(refresh, new LinearLayout.LayoutParams(dp(48), dp(48)));
         root.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        FrameLayout scrollFrame = new FrameLayout(this);
+        pullIndicator = label(getString(R.string.pull_to_ping), 13, accent, true);
+        pullIndicator.setGravity(Gravity.CENTER);
+        pullIndicator.setAlpha(0f);
+        pullIndicator.setTranslationY(dp(8));
+        FrameLayout.LayoutParams indicatorParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44), Gravity.TOP);
+        scrollFrame.addView(pullIndicator, indicatorParams);
 
         mainScroll = new ScrollView(this);
         mainScroll.setFillViewport(true);
@@ -179,7 +210,9 @@ public final class MainActivity extends Activity {
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(16), dp(16), dp(16), dp(28));
         mainScroll.addView(content, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(mainScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        scrollFrame.addView(mainScroll, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(scrollFrame, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         navigation = new LinearLayout(this);
         navigation.setPadding(dp(4), dp(4), dp(4), dp(6));
@@ -205,6 +238,7 @@ public final class MainActivity extends Activity {
     }
 
     private void selectTab(Tab tab) {
+        if (selectedApp != null) closeAppDetail();
         currentTab = tab;
         for (int i = 0; i < navigation.getChildCount(); i++) {
             Button button = (Button) navigation.getChildAt(i);
@@ -220,7 +254,14 @@ public final class MainActivity extends Activity {
 
     private void renderCurrentTab() {
         content.removeAllViews();
+        detailCpu = null;
+        detailMemory = null;
+        detailNetwork = null;
+        detailBlock = null;
+        networkGraph = null;
+        blockGraph = null;
         if (currentTab == Tab.SETTINGS) renderSettings();
+        else if (currentTab == Tab.APPS && selectedApp != null) renderAppDetail(selectedApp);
         else if (currentTab == Tab.APPS) renderApps();
         else if (currentTab == Tab.ALERTS) renderAlerts();
         else renderOverview();
@@ -269,6 +310,16 @@ public final class MainActivity extends Activity {
 
     private void renderResourceCard() {
         LinearLayout card = cardWithTitle(getString(R.string.resources));
+        DashboardData.InterfaceInfo activeInterface = findActiveInterface();
+        if (activeInterface != null) {
+            addKeyValue(card, getString(R.string.network_interface), activeInterface.name);
+            addKeyValue(card, getString(R.string.interface_address), activeInterface.addresses.isEmpty()
+                    ? getString(R.string.no_data) : join(activeInterface.addresses, ", "));
+            addKeyValue(card, getString(R.string.network_io), getString(R.string.network_io_values,
+                    formatRate(activeInterface.rxBytesPerSecond), formatRate(activeInterface.txBytesPerSecond)));
+        } else {
+            addKeyValue(card, getString(R.string.network_interface), getString(R.string.no_data));
+        }
         double load = dashboard.loadAverage[0];
         int cpuPercent = DashboardUiFormatter.cpuPercent(dashboard.cpuPercent);
         addMetric(card, getString(R.string.cpu_load),
@@ -276,6 +327,9 @@ public final class MainActivity extends Activity {
         card.addView(label(getString(R.string.load_average_hint), 12, muted, false));
         addKeyValue(card, getString(R.string.load_average),
                 DashboardUiFormatter.formatLoadAverage(load, Locale.getDefault()));
+        addKeyValue(card, getString(R.string.cpu_temperature), Double.isNaN(dashboard.cpuTemperatureC)
+                ? getString(R.string.no_data)
+                : String.format(Locale.getDefault(), "%.1f °C", dashboard.cpuTemperatureC));
         int memoryPercent = DashboardUiFormatter.percentage(dashboard.memoryUsed, dashboard.memoryTotal);
         String memory = dashboard.memoryTotal <= 0 ? getString(R.string.no_data)
                 : memoryPercent < 0 ? getString(R.string.total_memory, formatBytes(dashboard.memoryTotal))
@@ -285,6 +339,17 @@ public final class MainActivity extends Activity {
         long hours = dashboard.uptimeSeconds / 3600;
         addKeyValue(card, getString(R.string.uptime), getString(R.string.hours_short, hours, (dashboard.uptimeSeconds % 3600) / 60));
         content.addView(card, cardParams());
+    }
+
+    private DashboardData.InterfaceInfo findActiveInterface() {
+        if (dashboard == null) return null;
+        DashboardData.InterfaceInfo fallback = null;
+        for (DashboardData.InterfaceInfo item : dashboard.interfaces) {
+            if (fallback == null && !item.name.startsWith("lo")) fallback = item;
+            if (!item.addresses.isEmpty() && ("UP".equalsIgnoreCase(item.linkState)
+                    || "LINK_STATE_UP".equalsIgnoreCase(item.linkState))) return item;
+        }
+        return fallback;
     }
 
     private void renderPoolsCard() {
@@ -340,9 +405,12 @@ public final class MainActivity extends Activity {
         for (DashboardData.AppInfo app : dashboard.apps) {
             LinearLayout card = card();
             LinearLayout heading = row();
+            heading.addView(appIcon(app), new LinearLayout.LayoutParams(dp(56), dp(56)));
             LinearLayout names = column();
+            names.setPadding(dp(12), 0, dp(8), 0);
             names.addView(label(app.displayName, 18, text, true));
             if (!app.displayName.equals(app.name)) names.addView(label(app.name, 12, muted, false));
+            names.addView(label(getString(R.string.app_state_value, localizedState(app.state)), 13, muted, false));
             heading.addView(names, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             int stateColor = app.isRunning() ? color("#16A34A")
                     : app.state.contains("DEPLOY") ? color("#F59E0B") : muted;
@@ -373,8 +441,184 @@ public final class MainActivity extends Activity {
             }
             scroll.addView(actions);
             card.addView(scroll, sectionParams());
+            card.setClickable(true);
+            card.setFocusable(true);
+            card.setContentDescription(getString(R.string.open_app_details, app.displayName));
+            card.setOnClickListener(v -> openAppDetail(app));
             content.addView(card, cardParams());
         }
+    }
+
+    private View appIcon(DashboardData.AppInfo app) {
+        FrameLayout frame = new FrameLayout(this);
+        GradientDrawable fallbackShape = new GradientDrawable();
+        fallbackShape.setColor(withAlpha(accent, dark ? 68 : 36));
+        fallbackShape.setCornerRadius(dp(14));
+        TextView fallback = label(initialOf(app.displayName), 24, accent, true);
+        fallback.setGravity(Gravity.CENTER);
+        fallback.setBackground(fallbackShape);
+        frame.addView(fallback, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        ImageView image = new ImageView(this);
+        image.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        image.setPadding(dp(4), dp(4), dp(4), dp(4));
+        image.setAlpha(0f);
+        image.setContentDescription(null);
+        frame.addView(image, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        AppIconLoader.load(app.iconUrl, image);
+        return frame;
+    }
+
+    private void openAppDetail(DashboardData.AppInfo app) {
+        selectedApp = app;
+        renderCurrentTab();
+        mainScroll.scrollTo(0, 0);
+        startAppStats(app);
+    }
+
+    private void closeAppDetail() {
+        stopAppStats();
+        selectedApp = null;
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (selectedApp != null) {
+            closeAppDetail();
+            renderCurrentTab();
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    private void renderAppDetail(DashboardData.AppInfo app) {
+        LinearLayout heading = row();
+        Button back = iconButton("‹");
+        back.setContentDescription(getString(R.string.back_to_apps));
+        back.setOnClickListener(v -> {
+            closeAppDetail();
+            renderCurrentTab();
+        });
+        heading.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        heading.addView(appIcon(app), new LinearLayout.LayoutParams(dp(52), dp(52)));
+        TextView name = label(app.displayName, 21, text, true);
+        name.setPadding(dp(12), 0, 0, 0);
+        heading.addView(name, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        content.addView(heading, cardParams());
+
+        LinearLayout info = cardWithTitle(getString(R.string.app_information));
+        addKeyValue(info, getString(R.string.status), localizedState(app.state));
+        addKeyValue(info, getString(R.string.app_name_label), app.displayName);
+        addKeyValue(info, getString(R.string.app_version), valueOrNoData(app.appVersion));
+        addKeyValue(info, getString(R.string.catalog_revision), valueOrNoData(app.catalogRevision));
+        Button webUi = actionButton(getString(R.string.open_web_ui), true);
+        webUi.setEnabled(app.webUiUrl != null && !app.webUiUrl.trim().isEmpty());
+        webUi.setContentDescription(getString(R.string.open_web_ui_for, app.displayName));
+        webUi.setOnClickListener(v -> openWebUi(app.webUiUrl));
+        info.addView(webUi, buttonSectionParams());
+        content.addView(info, cardParams());
+
+        LinearLayout deployment = cardWithTitle(getString(R.string.deployment));
+        addKeyValue(deployment, getString(R.string.ports), formatPorts(app.ports));
+        addKeyValue(deployment, getString(R.string.containers), String.valueOf(app.containerCount));
+        content.addView(deployment, cardParams());
+
+        LinearLayout load = cardWithTitle(getString(R.string.load));
+        detailCpu = valueRow(load, getString(R.string.cpu_used));
+        detailMemory = valueRow(load, getString(R.string.memory_used));
+        load.addView(graphHeading(getString(R.string.network_io), color("#27A9E1"), color("#F59E0B")), sectionParams());
+        detailNetwork = label("", 13, muted, false);
+        load.addView(detailNetwork);
+        networkGraph = new SparklineView(this, color("#27A9E1"), color("#F59E0B"), border);
+        networkGraph.setContentDescription(getString(R.string.network_graph_description));
+        load.addView(networkGraph, graphParams());
+        load.addView(graphHeading(getString(R.string.block_io), color("#27A9E1"), color("#A855F7")), sectionParams());
+        detailBlock = label("", 13, muted, false);
+        load.addView(detailBlock);
+        blockGraph = new SparklineView(this, color("#27A9E1"), color("#A855F7"), border);
+        blockGraph.setContentDescription(getString(R.string.block_graph_description));
+        load.addView(blockGraph, graphParams());
+        content.addView(load, cardParams());
+        updateAppStatsViews(app.stats);
+    }
+
+    private TextView valueRow(LinearLayout parent, String caption) {
+        LinearLayout line = row();
+        line.addView(label(caption, 14, muted, false),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView value = label(getString(R.string.no_data), 14, text, true);
+        line.addView(value);
+        parent.addView(line, sectionParams());
+        return value;
+    }
+
+    private TextView graphHeading(String caption, int firstColor, int secondColor) {
+        TextView result = label(caption, 15, text, true);
+        result.setCompoundDrawablePadding(dp(6));
+        return result;
+    }
+
+    private void startAppStats(DashboardData.AppInfo app) {
+        stopAppStats();
+        if (app == null || !app.isRunning() || config == null || !config.isApiConfigured()) return;
+        final int generation = ++appStatsGeneration;
+        final AppConfig statsConfig = config;
+        appStatsExecutor.execute(() -> {
+            AppStatsMonitor monitor = null;
+            try {
+                monitor = new AppStatsMonitor(statsConfig);
+                if (generation != appStatsGeneration) {
+                    monitor.close();
+                    return;
+                }
+                appStatsMonitor = monitor;
+                while (generation == appStatsGeneration && !Thread.currentThread().isInterrupted()) {
+                    DashboardData.AppStats stats = monitor.nextFor(app.name);
+                    if (stats == null) continue;
+                    runOnUiThread(() -> {
+                        if (generation != appStatsGeneration || selectedApp != app) return;
+                        app.stats = stats;
+                        updateAppStatsViews(stats);
+                    });
+                }
+            } catch (Exception ignored) {
+                // Closing the monitor is the normal way to unblock nextFor when leaving this screen.
+            } finally {
+                if (monitor != null) monitor.close();
+                if (appStatsMonitor == monitor) appStatsMonitor = null;
+            }
+        });
+    }
+
+    private void stopAppStats() {
+        appStatsGeneration++;
+        AppStatsMonitor monitor = appStatsMonitor;
+        appStatsMonitor = null;
+        if (monitor != null) monitor.close();
+    }
+
+    private void updateAppStatsViews(DashboardData.AppStats stats) {
+        if (detailCpu == null || detailMemory == null || detailNetwork == null || detailBlock == null) return;
+        if (stats == null) {
+            detailCpu.setText(getString(R.string.no_data));
+            detailMemory.setText(getString(R.string.no_data));
+            detailNetwork.setText(getString(R.string.network_io_values,
+                    getString(R.string.no_data), getString(R.string.no_data)));
+            detailBlock.setText(getString(R.string.block_io_values,
+                    getString(R.string.no_data), getString(R.string.no_data)));
+            return;
+        }
+        detailCpu.setText(stats.cpuPercent < 0 ? getString(R.string.no_data)
+                : String.format(Locale.getDefault(), "%.1f%%", stats.cpuPercent));
+        detailMemory.setText(stats.memoryBytes < 0 ? getString(R.string.no_data) : formatGiB(stats.memoryBytes));
+        detailNetwork.setText(getString(R.string.network_io_values,
+                formatRate(stats.networkRxBytesPerSecond), formatRate(stats.networkTxBytesPerSecond)));
+        detailBlock.setText(getString(R.string.block_io_values,
+                formatMiB(stats.blockReadBytes), formatMiB(stats.blockWriteBytes)));
+        if (networkGraph != null) networkGraph.addSample(
+                stats.networkRxBytesPerSecond, stats.networkTxBytesPerSecond);
+        if (blockGraph != null) blockGraph.addSample(stats.blockReadBytes, stats.blockWriteBytes);
     }
 
     private void renderAlerts() {
@@ -568,6 +812,7 @@ public final class MainActivity extends Activity {
 
     private void stopPingLoop() {
         pingLoopActive = false;
+        pingRequested = false;
         mainHandler.removeCallbacks(pingTick);
     }
 
@@ -596,7 +841,14 @@ public final class MainActivity extends Activity {
                     lastPingLatencyMillis = result.latencyMillis();
                     updateServerStatusViews();
                 }
-                if (pingLoopActive) mainHandler.postDelayed(pingTick, PING_INTERVAL_MILLIS);
+                if (pingLoopActive) {
+                    if (pingRequested) {
+                        pingRequested = false;
+                        mainHandler.post(pingTick);
+                    } else {
+                        mainHandler.postDelayed(pingTick, PING_INTERVAL_MILLIS);
+                    }
+                }
             });
         });
     }
@@ -626,25 +878,63 @@ public final class MainActivity extends Activity {
         if (currentTab == Tab.SETTINGS) return false;
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
             pullFromTop = mainScroll.getScrollY() == 0;
-            pullStartY = event.getY();
-        } else if (event.getActionMasked() == MotionEvent.ACTION_UP) {
-            if (pullFromTop && mainScroll.getScrollY() == 0 && event.getY() - pullStartY >= dp(72)) {
-                mainScroll.performClick();
-                fullRefresh();
+            pullStartY = event.getRawY();
+            mainScroll.animate().cancel();
+            pullIndicator.animate().cancel();
+        } else if (event.getActionMasked() == MotionEvent.ACTION_MOVE && pullFromTop) {
+            float distance = Math.max(0, event.getRawY() - pullStartY);
+            if (distance > dp(8) && mainScroll.getScrollY() == 0) {
+                float progress = Math.min(1f, distance / dp(120));
+                float displacement = Math.min(dp(96), distance * 0.55f);
+                mainScroll.setTranslationY(displacement);
+                pullIndicator.setAlpha(Math.min(1f, progress * 1.35f));
+                pullIndicator.setTranslationY(dp(5) + displacement * 0.18f);
+                pullIndicator.setScaleX(0.92f + progress * 0.08f);
+                pullIndicator.setScaleY(0.92f + progress * 0.08f);
+                pullIndicator.setText(progress >= 1f
+                        ? getString(R.string.release_to_ping) : getString(R.string.pull_to_ping));
             }
-            pullFromTop = false;
+        } else if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+            float distance = Math.max(0, event.getRawY() - pullStartY);
+            if (pullFromTop && mainScroll.getScrollY() == 0 && distance >= dp(120)) {
+                mainScroll.performClick();
+                pullIndicator.setText(getString(R.string.pinging_now));
+                requestImmediatePing();
+            }
+            finishPullAnimation();
         } else if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-            pullFromTop = false;
+            finishPullAnimation();
         }
         return false;
     }
 
+    private void finishPullAnimation() {
+        pullFromTop = false;
+        mainScroll.animate().translationY(0f).setDuration(300)
+                .setInterpolator(new OvershootInterpolator(0.7f)).start();
+        pullIndicator.animate().alpha(0f).translationY(dp(8)).scaleX(1f).scaleY(1f)
+                .setDuration(240).start();
+    }
+
+    private void requestImmediatePing() {
+        if (!pingLoopActive) return;
+        mainHandler.removeCallbacks(pingTick);
+        if (pingInFlight) {
+            pingRequested = true;
+        } else {
+            mainHandler.post(pingTick);
+        }
+    }
+
     private void fullRefresh() {
+        pendingAppDetailName = selectedApp == null ? null : selectedApp.name;
+        closeAppDetail();
         config = store.load();
         dashboard = null;
         pingReachable = null;
         lastPingEpochMillis = 0L;
         lastPingLatencyMillis = -1L;
+        refreshing = false;
         renderCurrentTab();
         refreshDashboard();
         if (pingLoopActive) {
@@ -722,22 +1012,36 @@ public final class MainActivity extends Activity {
             return;
         }
         refreshing = true;
+        final int generation = ++dashboardGeneration;
+        final AppConfig refreshConfig = config;
         if (currentTab == Tab.OVERVIEW) renderCurrentTab();
         executor.execute(() -> {
+            DashboardData loaded;
             try {
-                DashboardData loaded = new TrueNasClient(config).loadDashboard();
-                dashboard = loaded;
-                maybeNotify(loaded);
+                loaded = new TrueNasClient(refreshConfig).loadDashboard();
             } catch (Exception error) {
-                DashboardData offline = new DashboardData();
-                offline.online = false;
-                dashboard = offline;
+                loaded = new DashboardData();
+                loaded.online = false;
             }
+            DashboardData result = loaded;
             runOnUiThread(() -> {
+                if (generation != dashboardGeneration) return;
+                dashboard = result;
+                maybeNotify(result);
                 refreshing = false;
+                DashboardData.AppInfo reopened = findApp(pendingAppDetailName);
+                pendingAppDetailName = null;
+                if (reopened != null && currentTab == Tab.APPS) selectedApp = reopened;
                 renderCurrentTab();
+                if (selectedApp == reopened && reopened != null) startAppStats(reopened);
             });
         });
+    }
+
+    private DashboardData.AppInfo findApp(String name) {
+        if (name == null || dashboard == null) return null;
+        for (DashboardData.AppInfo app : dashboard.apps) if (name.equals(app.name)) return app;
+        return null;
     }
 
     private void wakeServer() {
@@ -1040,6 +1344,20 @@ public final class MainActivity extends Activity {
         return params;
     }
 
+    private LinearLayout.LayoutParams buttonSectionParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
+        params.setMargins(0, dp(14), 0, 0);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams graphParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(104));
+        params.setMargins(0, dp(8), 0, 0);
+        return params;
+    }
+
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
@@ -1067,6 +1385,78 @@ public final class MainActivity extends Activity {
             unit++;
         }
         return String.format(Locale.getDefault(), value >= 10 ? "%.0f %s" : "%.1f %s", value, units[unit]);
+    }
+
+    private String valueOrNoData(String value) {
+        return value == null || value.trim().isEmpty() ? getString(R.string.no_data) : value;
+    }
+
+    private static String initialOf(String value) {
+        if (value == null || value.trim().isEmpty()) return "?";
+        String trimmed = value.trim();
+        int codePoint = trimmed.codePointAt(0);
+        return new String(Character.toChars(codePoint)).toUpperCase(Locale.getDefault());
+    }
+
+    private static String join(java.util.List<String> values, String separator) {
+        StringBuilder result = new StringBuilder();
+        for (String value : values) {
+            if (value == null || value.trim().isEmpty()) continue;
+            if (result.length() > 0) result.append(separator);
+            result.append(value.trim());
+        }
+        return result.toString();
+    }
+
+    private String formatPorts(java.util.List<DashboardData.PortInfo> ports) {
+        if (ports == null || ports.isEmpty()) return getString(R.string.no_data);
+        java.util.ArrayList<String> values = new java.util.ArrayList<>();
+        for (DashboardData.PortInfo port : ports) {
+            String protocol = port.protocol == null || port.protocol.isEmpty()
+                    ? "" : "/" + port.protocol.toLowerCase(Locale.US);
+            if (port.hostPorts.isEmpty()) {
+                values.add(port.containerPort + protocol);
+                continue;
+            }
+            for (DashboardData.HostPortInfo host : port.hostPorts) {
+                String address = host.hostIp == null || host.hostIp.isEmpty() || "0.0.0.0".equals(host.hostIp)
+                        ? "" : host.hostIp + ":";
+                String mapping = address + host.hostPort;
+                if (host.hostPort != port.containerPort) mapping += " → " + port.containerPort;
+                values.add(mapping + protocol);
+            }
+        }
+        return values.isEmpty() ? getString(R.string.no_data) : join(values, ", ");
+    }
+
+    private static String formatRate(double bytesPerSecond) {
+        if (bytesPerSecond < 0 || Double.isNaN(bytesPerSecond)) return "—";
+        if (bytesPerSecond >= 1024 * 1024) return String.format(Locale.getDefault(), "%.1f MiB/s", bytesPerSecond / (1024 * 1024));
+        if (bytesPerSecond >= 1024) return String.format(Locale.getDefault(), "%.1f KiB/s", bytesPerSecond / 1024);
+        return String.format(Locale.getDefault(), "%.0f B/s", bytesPerSecond);
+    }
+
+    private static String formatGiB(long bytes) {
+        return String.format(Locale.getDefault(), "%.2f GiB", bytes / (1024d * 1024d * 1024d));
+    }
+
+    private static String formatMiB(long bytes) {
+        if (bytes < 0) return "—";
+        return String.format(Locale.getDefault(), "%.1f MiB", bytes / (1024d * 1024d));
+    }
+
+    private void openWebUi(String value) {
+        if (value == null) return;
+        Uri uri = Uri.parse(value.trim());
+        if (!("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))) {
+            toast(R.string.web_ui_unavailable);
+            return;
+        }
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, uri));
+        } catch (android.content.ActivityNotFoundException unavailable) {
+            toast(R.string.web_ui_unavailable);
+        }
     }
 
     private void showActionError(String operation, Exception error) {

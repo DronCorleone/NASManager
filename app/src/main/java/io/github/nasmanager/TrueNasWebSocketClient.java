@@ -16,8 +16,11 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.util.ArrayDeque;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLParameters;
@@ -33,6 +36,7 @@ final class TrueNasWebSocketClient implements AutoCloseable {
     private InputStream input;
     private OutputStream output;
     private long nextId = 1;
+    private final Map<String, ArrayDeque<Object>> eventBacklog = new HashMap<>();
 
     /** The modern /api/current endpoint is absent on older TrueNAS versions. */
     static final class ApiUnavailableException extends IOException {
@@ -91,7 +95,10 @@ final class TrueNasWebSocketClient implements AutoCloseable {
         sendFrame(1, request.toString().getBytes(StandardCharsets.UTF_8));
         while (true) {
             JSONObject response = new JSONObject(readTextMessage());
-            if (!response.has("id") || response.optLong("id", -1) != id) continue;
+            if (!response.has("id") || response.optLong("id", -1) != id) {
+                enqueueEvent(response);
+                continue;
+            }
             JSONObject error = response.optJSONObject("error");
             if (error != null) {
                 JSONObject data = error.optJSONObject("data");
@@ -116,16 +123,45 @@ final class TrueNasWebSocketClient implements AutoCloseable {
     }
 
     JSONObject nextEvent(String collection) throws Exception {
+        Object fields = nextEventFields(collection);
+        if (fields instanceof JSONObject) return (JSONObject) fields;
+        return new JSONObject().put("fields", fields == null ? JSONObject.NULL : fields);
+    }
+
+    /** Returns event fields without assuming they are an object (app.stats fields are an array). */
+    Object nextEventFields(String collection) throws Exception {
+        Object pending = pollEvent(collection);
+        if (pending != null) return pending;
         while (true) {
             JSONObject message = new JSONObject(readTextMessage());
-            String method = message.optString("method", "");
-            JSONObject params = message.optJSONObject("params");
-            if (params == null) continue;
-            String messageCollection = params.optString("collection", method);
-            if (!collection.equals(messageCollection) && !messageCollection.startsWith(collection + ":")) continue;
-            JSONObject fields = params.optJSONObject("fields");
-            return fields == null ? params : fields;
+            enqueueEvent(message);
+            pending = pollEvent(collection);
+            if (pending != null) return pending;
         }
+    }
+
+    private void enqueueEvent(JSONObject message) {
+        String method = message.optString("method", "");
+        JSONObject params = message.optJSONObject("params");
+        if (params == null) return;
+        String collection = params.optString("collection", method);
+        if (collection.isEmpty()) return;
+        int dynamicArgs = collection.indexOf(':');
+        String key = dynamicArgs < 0 ? collection : collection.substring(0, dynamicArgs);
+        Object fields = params.has("fields") ? params.opt("fields") : params;
+        ArrayDeque<Object> queue = eventBacklog.get(key);
+        if (queue == null) {
+            queue = new ArrayDeque<>();
+            eventBacklog.put(key, queue);
+        }
+        // A bounded backlog prevents a slow consumer from retaining an unbounded stats history.
+        if (queue.size() >= 4) queue.removeFirst();
+        queue.addLast(fields == null ? JSONObject.NULL : fields);
+    }
+
+    private Object pollEvent(String collection) {
+        ArrayDeque<Object> queue = eventBacklog.get(collection);
+        return queue == null || queue.isEmpty() ? null : queue.removeFirst();
     }
 
     private void login(AppConfig config) throws Exception {

@@ -19,6 +19,12 @@ final class AppConfig {
     boolean showApps = true;
     boolean showAlerts = true;
     boolean notifyAlerts = true;
+    boolean wakeScheduleEnabled = false;
+    int wakeHour = 8;
+    int wakeMinute = 0;
+    boolean shutdownScheduleEnabled = false;
+    int shutdownHour = 23;
+    int shutdownMinute = 0;
 
     boolean isApiConfigured() {
         if (username == null || username.trim().isEmpty()) return false;
@@ -88,7 +94,8 @@ final class AppConfig {
         return usesPasswordAuthentication() ? "password" : "api_key";
     }
 
-    private URI parseServerUri() throws IOException {
+    /** Returns the validated server origin without requiring or inspecting credentials. */
+    URI serverOriginUri() throws IOException {
         if (serverUrl == null || serverUrl.trim().isEmpty()) {
             throw new IOException("TrueNAS server URL is required");
         }
@@ -112,5 +119,9 @@ final class AppConfig {
             throw new IOException("TrueNAS server URL must not contain a path");
         }
         return uri;
+    }
+
+    private URI parseServerUri() throws IOException {
+        return serverOriginUri();
     }
 }

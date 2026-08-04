@@ -19,9 +19,11 @@ final class SecureConfigStore {
     private static final String PREFS = "nas_manager";
     private static final String KEY_ALIAS = "nas_manager_api_key";
     private final SharedPreferences preferences;
+    private final Context context;
 
     SecureConfigStore(Context context) {
-        preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        this.context = context.getApplicationContext();
+        preferences = this.context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
     AppConfig load() {
@@ -40,6 +42,12 @@ final class SecureConfigStore {
         config.showApps = preferences.getBoolean("show_apps", true);
         config.showAlerts = preferences.getBoolean("show_alerts", true);
         config.notifyAlerts = preferences.getBoolean("notify_alerts", true);
+        config.wakeScheduleEnabled = preferences.getBoolean("wake_schedule_enabled", false);
+        config.wakeHour = preferences.getInt("wake_hour", 8);
+        config.wakeMinute = preferences.getInt("wake_minute", 0);
+        config.shutdownScheduleEnabled = preferences.getBoolean("shutdown_schedule_enabled", false);
+        config.shutdownHour = preferences.getInt("shutdown_hour", 23);
+        config.shutdownMinute = preferences.getInt("shutdown_minute", 0);
         return config;
     }
 
@@ -59,7 +67,14 @@ final class SecureConfigStore {
                 .putBoolean("show_apps", config.showApps)
                 .putBoolean("show_alerts", config.showAlerts)
                 .putBoolean("notify_alerts", config.notifyAlerts)
+                .putBoolean("wake_schedule_enabled", config.wakeScheduleEnabled)
+                .putInt("wake_hour", config.wakeHour)
+                .putInt("wake_minute", config.wakeMinute)
+                .putBoolean("shutdown_schedule_enabled", config.shutdownScheduleEnabled)
+                .putInt("shutdown_hour", config.shutdownHour)
+                .putInt("shutdown_minute", config.shutdownMinute)
                 .apply();
+        ScheduleManager.sync(context, config);
     }
 
     String getTheme() {

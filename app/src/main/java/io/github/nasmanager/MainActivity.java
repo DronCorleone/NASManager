@@ -3,14 +3,19 @@ package io.github.nasmanager;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.TimePickerDialog;
+import android.content.Intent;
 import android.content.res.Configuration;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.InputType;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -21,27 +26,47 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
+import android.widget.Switch;
 import android.widget.ArrayAdapter;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.Locale;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.time.ZoneId;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
+    private static final long PING_INTERVAL_MILLIS = 10_000L;
+
     private enum Tab { OVERVIEW, APPS, ALERTS, SETTINGS }
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService pingExecutor = Executors.newSingleThreadExecutor();
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private SecureConfigStore store;
     private AppConfig config;
     private DashboardData dashboard;
     private LinearLayout content;
     private LinearLayout navigation;
     private TextView titleView;
+    private ScrollView mainScroll;
+    private TextView serverDotView;
+    private TextView serverStateView;
+    private TextView lastPingView;
+    private Button shutdownButton;
     private Tab currentTab = Tab.OVERVIEW;
     private boolean refreshing;
+    private boolean pingInFlight;
+    private boolean pingLoopActive;
+    private Boolean pingReachable;
+    private long lastPingEpochMillis;
+    private long lastPingLatencyMillis = -1L;
+    private float pullStartY;
+    private boolean pullFromTop;
+    private boolean exactAlarmSettingsOpened;
     private boolean dark;
     private int background;
     private int surface;
@@ -49,6 +74,12 @@ public final class MainActivity extends Activity {
     private int muted;
     private int accent;
     private int border;
+    private final Runnable pingTick = new Runnable() {
+        @Override
+        public void run() {
+            probeServer();
+        }
+    };
 
     @Override
     protected void onCreate(Bundle state) {
@@ -65,8 +96,31 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        mainHandler.removeCallbacks(pingTick);
+        pingExecutor.shutdownNow();
         executor.shutdownNow();
         super.onDestroy();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (exactAlarmSettingsOpened && config != null) {
+            exactAlarmSettingsOpened = false;
+            config = store.load();
+            if (currentTab == Tab.SETTINGS) renderCurrentTab();
+        }
+        if (config != null && (config.wakeScheduleEnabled || config.shutdownScheduleEnabled)
+                && ScheduleManager.canScheduleExactAlarms(this)) {
+            ScheduleManager.sync(this, config);
+        }
+        startPingLoop();
+    }
+
+    @Override
+    protected void onPause() {
+        stopPingLoop();
+        super.onPause();
     }
 
     private void applyTheme(String value) {
@@ -113,17 +167,19 @@ public final class MainActivity extends Activity {
         header.addView(titleView, new LinearLayout.LayoutParams(0, dp(48), 1));
         Button refresh = iconButton("↻");
         refresh.setContentDescription(getString(R.string.refresh));
-        refresh.setOnClickListener(v -> refreshDashboard());
+        refresh.setOnClickListener(v -> fullRefresh());
         header.addView(refresh, new LinearLayout.LayoutParams(dp(48), dp(48)));
         root.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
+        mainScroll = new ScrollView(this);
+        mainScroll.setFillViewport(true);
+        mainScroll.setOverScrollMode(View.OVER_SCROLL_ALWAYS);
+        mainScroll.setOnTouchListener((view, event) -> handlePullToRefresh(event));
         content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(16), dp(16), dp(16), dp(28));
-        scroll.addView(content, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        mainScroll.addView(content, new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(mainScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         navigation = new LinearLayout(this);
         navigation.setPadding(dp(4), dp(4), dp(4), dp(6));
@@ -173,28 +229,33 @@ public final class MainActivity extends Activity {
     private void renderOverview() {
         LinearLayout serverCard = card();
         LinearLayout statusRow = row();
-        boolean online = dashboard != null && dashboard.online;
-        TextView dot = label("●", 18, refreshing ? color("#F59E0B") : online ? color("#16A34A") : color("#DC2626"), true);
-        statusRow.addView(dot, new LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.WRAP_CONTENT));
+        boolean online = isServerOnline();
+        serverDotView = label("●", 18, muted, true);
+        statusRow.addView(serverDotView, new LinearLayout.LayoutParams(dp(28), ViewGroup.LayoutParams.WRAP_CONTENT));
         LinearLayout statusText = column();
-        statusText.addView(label(refreshing ? getString(R.string.server_checking)
-                : online ? getString(R.string.server_online) : getString(R.string.server_offline), 18, text, true));
-        String subtitle = online ? dashboard.hostName + (dashboard.version.isEmpty() ? "" : " · " + dashboard.version)
+        serverStateView = label("", 18, text, true);
+        statusText.addView(serverStateView);
+        String subtitle = dashboard != null && dashboard.online
+                ? dashboard.hostName + (dashboard.version.isEmpty() ? "" : " · " + dashboard.version)
                 : (config.isApiConfigured() ? config.normalizedUrl() : getString(R.string.configure_hint));
         statusText.addView(label(subtitle, 13, muted, false));
         statusRow.addView(statusText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        lastPingView = label("", 12, muted, false);
+        lastPingView.setGravity(Gravity.END);
+        statusRow.addView(lastPingView, new LinearLayout.LayoutParams(dp(98), ViewGroup.LayoutParams.WRAP_CONTENT));
         serverCard.addView(statusRow);
 
         LinearLayout actions = row();
         Button wake = actionButton(getString(R.string.wake), true);
         wake.setOnClickListener(v -> wakeServer());
-        Button shutdown = actionButton(getString(R.string.shutdown), false);
-        shutdown.setEnabled(online);
-        shutdown.setOnClickListener(v -> confirmShutdown());
+        shutdownButton = actionButton(getString(R.string.shutdown), false);
+        shutdownButton.setEnabled(online);
+        shutdownButton.setOnClickListener(v -> confirmShutdown());
         actions.addView(wake, weightedButtonParams(true));
-        actions.addView(shutdown, weightedButtonParams(false));
+        actions.addView(shutdownButton, weightedButtonParams(false));
         serverCard.addView(actions);
         content.addView(serverCard, cardParams());
+        updateServerStatusViews();
 
         if (dashboard == null) {
             emptyState(config.isApiConfigured() ? getString(R.string.no_data) : getString(R.string.configure_hint));
@@ -388,6 +449,33 @@ public final class MainActivity extends Activity {
                 indexOf(config.minimumSeverity, new String[]{"INFO", "WARNING", "CRITICAL"}));
         addField(getString(R.string.minimum_severity), severity);
 
+        content.addView(label(getString(R.string.power_schedule), 20, text, true), headingParams());
+        content.addView(label(getString(R.string.power_schedule_hint), 12, muted, false));
+        if ((config.wakeScheduleEnabled || config.shutdownScheduleEnabled)
+                && !ScheduleManager.canScheduleExactAlarms(this)) {
+            LinearLayout permissionRow = row();
+            permissionRow.addView(label(getString(R.string.exact_alarm_required), 13,
+                    color("#F59E0B"), true), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            Button permissionButton = actionButton(getString(R.string.open_settings), false);
+            permissionButton.setOnClickListener(v -> openExactAlarmSettings());
+            permissionRow.addView(permissionButton, new LinearLayout.LayoutParams(dp(132), dp(44)));
+            content.addView(permissionRow, sectionParams());
+        }
+        final int[] wakeTime = {config.wakeHour, config.wakeMinute};
+        final int[] shutdownTime = {config.shutdownHour, config.shutdownMinute};
+        Switch wakeSchedule = scheduleSwitch(getString(R.string.scheduled_wake), config.wakeScheduleEnabled);
+        Button wakeTimeButton = timeButton(wakeTime[0], wakeTime[1]);
+        wakeTimeButton.setEnabled(wakeSchedule.isChecked());
+        wakeSchedule.setOnCheckedChangeListener((button, checked) -> wakeTimeButton.setEnabled(checked));
+        wakeTimeButton.setOnClickListener(v -> chooseTime(wakeTime, wakeTimeButton));
+        content.addView(scheduleRow(wakeSchedule, wakeTimeButton), sectionParams());
+        Switch shutdownSchedule = scheduleSwitch(getString(R.string.scheduled_shutdown), config.shutdownScheduleEnabled);
+        Button shutdownTimeButton = timeButton(shutdownTime[0], shutdownTime[1]);
+        shutdownTimeButton.setEnabled(shutdownSchedule.isChecked());
+        shutdownSchedule.setOnCheckedChangeListener((button, checked) -> shutdownTimeButton.setEnabled(checked));
+        shutdownTimeButton.setOnClickListener(v -> chooseTime(shutdownTime, shutdownTimeButton));
+        content.addView(scheduleRow(shutdownSchedule, shutdownTimeButton), sectionParams());
+
         TextView privacy = label(getString(R.string.privacy_note), 12, muted, false);
         privacy.setPadding(0, dp(16), 0, dp(12));
         content.addView(privacy);
@@ -418,15 +506,38 @@ public final class MainActivity extends Activity {
             config.showApps = showApps.isChecked();
             config.showAlerts = showAlerts.isChecked();
             config.notifyAlerts = notifyAlerts.isChecked();
+            config.wakeScheduleEnabled = wakeSchedule.isChecked();
+            config.wakeHour = wakeTime[0];
+            config.wakeMinute = wakeTime[1];
+            config.shutdownScheduleEnabled = shutdownSchedule.isChecked();
+            config.shutdownHour = shutdownTime[0];
+            config.shutdownMinute = shutdownTime[1];
         };
         save.setOnClickListener(v -> {
             readForm.run();
+            if (config.wakeScheduleEnabled) {
+                try {
+                    WakeOnLan.parseMac(config.macAddress);
+                } catch (IllegalArgumentException invalidMac) {
+                    toast(R.string.schedule_wake_requires_mac);
+                    return;
+                }
+            }
+            if (config.shutdownScheduleEnabled && !config.isApiConfigured()) {
+                toast(R.string.schedule_shutdown_requires_connection);
+                return;
+            }
             store.save(config);
             if (config.notifyAlerts && android.os.Build.VERSION.SDK_INT >= 33
                     && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 100);
             }
             toast(R.string.saved);
+            if ((config.wakeScheduleEnabled || config.shutdownScheduleEnabled)
+                    && !ScheduleManager.canScheduleExactAlarms(this)) {
+                requestExactAlarmAccess();
+                return;
+            }
             recreate();
         });
         test.setOnClickListener(v -> {
@@ -447,6 +558,160 @@ public final class MainActivity extends Activity {
                 }
             });
         });
+    }
+
+    private void startPingLoop() {
+        pingLoopActive = true;
+        mainHandler.removeCallbacks(pingTick);
+        mainHandler.post(pingTick);
+    }
+
+    private void stopPingLoop() {
+        pingLoopActive = false;
+        mainHandler.removeCallbacks(pingTick);
+    }
+
+    private void probeServer() {
+        mainHandler.removeCallbacks(pingTick);
+        if (!pingLoopActive) return;
+        if (config == null || config.serverUrl == null || config.serverUrl.trim().isEmpty()) {
+            pingReachable = null;
+            updateServerStatusViews();
+            mainHandler.postDelayed(pingTick, PING_INTERVAL_MILLIS);
+            return;
+        }
+        if (pingInFlight) {
+            mainHandler.postDelayed(pingTick, PING_INTERVAL_MILLIS);
+            return;
+        }
+        pingInFlight = true;
+        AppConfig pingConfig = config;
+        pingExecutor.execute(() -> {
+            ServerReachabilityProbe.Result result = new ServerReachabilityProbe().probe(pingConfig);
+            runOnUiThread(() -> {
+                pingInFlight = false;
+                if (config == pingConfig) {
+                    pingReachable = result.isReachable();
+                    lastPingEpochMillis = result.checkedAtEpochMillis();
+                    lastPingLatencyMillis = result.latencyMillis();
+                    updateServerStatusViews();
+                }
+                if (pingLoopActive) mainHandler.postDelayed(pingTick, PING_INTERVAL_MILLIS);
+            });
+        });
+    }
+
+    private boolean isServerOnline() {
+        return pingReachable != null ? pingReachable : dashboard != null && dashboard.online;
+    }
+
+    private void updateServerStatusViews() {
+        if (serverDotView == null || serverStateView == null || lastPingView == null) return;
+        boolean online = isServerOnline();
+        serverDotView.setTextColor(refreshing ? color("#F59E0B") : online ? color("#16A34A") : color("#DC2626"));
+        serverStateView.setText(refreshing ? getString(R.string.server_checking)
+                : online ? getString(R.string.server_online) : getString(R.string.server_offline));
+        if (lastPingEpochMillis <= 0) {
+            lastPingView.setText(getString(R.string.last_ping, getString(R.string.never)));
+        } else {
+            String checkedAt = new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date(lastPingEpochMillis));
+            String pingText = getString(R.string.last_ping, checkedAt);
+            if (lastPingLatencyMillis >= 0) pingText += "\n" + getString(R.string.ping_latency_ms, lastPingLatencyMillis);
+            lastPingView.setText(pingText);
+        }
+        if (shutdownButton != null) shutdownButton.setEnabled(online);
+    }
+
+    private boolean handlePullToRefresh(MotionEvent event) {
+        if (currentTab == Tab.SETTINGS) return false;
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            pullFromTop = mainScroll.getScrollY() == 0;
+            pullStartY = event.getY();
+        } else if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+            if (pullFromTop && mainScroll.getScrollY() == 0 && event.getY() - pullStartY >= dp(72)) {
+                mainScroll.performClick();
+                fullRefresh();
+            }
+            pullFromTop = false;
+        } else if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+            pullFromTop = false;
+        }
+        return false;
+    }
+
+    private void fullRefresh() {
+        config = store.load();
+        dashboard = null;
+        pingReachable = null;
+        lastPingEpochMillis = 0L;
+        lastPingLatencyMillis = -1L;
+        renderCurrentTab();
+        refreshDashboard();
+        if (pingLoopActive) {
+            mainHandler.removeCallbacks(pingTick);
+            mainHandler.post(pingTick);
+        }
+    }
+
+    private Switch scheduleSwitch(String caption, boolean checked) {
+        Switch result = new Switch(this);
+        result.setText(caption);
+        result.setTextColor(text);
+        result.setTextSize(14);
+        result.setChecked(checked);
+        result.setShowText(false);
+        result.setThumbTintList(new ColorStateList(
+                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+                new int[]{accent, muted}));
+        result.setTrackTintList(new ColorStateList(
+                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+                new int[]{withAlpha(accent, 112), withAlpha(muted, 72)}));
+        return result;
+    }
+
+    private LinearLayout scheduleRow(Switch toggle, Button time) {
+        LinearLayout result = row();
+        result.addView(toggle, new LinearLayout.LayoutParams(0, dp(52), 1));
+        result.addView(time, new LinearLayout.LayoutParams(dp(104), dp(48)));
+        return result;
+    }
+
+    private Button timeButton(int hour, int minute) {
+        Button result = actionButton(formatTime(hour, minute), false);
+        result.setContentDescription(getString(R.string.choose_time));
+        return result;
+    }
+
+    private void chooseTime(int[] value, Button target) {
+        new TimePickerDialog(this, (picker, hour, minute) -> {
+            value[0] = hour;
+            value[1] = minute;
+            target.setText(formatTime(hour, minute));
+        }, value[0], value[1], true).show();
+    }
+
+    private String formatTime(int hour, int minute) {
+        return String.format(Locale.getDefault(), "%02d:%02d", hour, minute);
+    }
+
+    private void requestExactAlarmAccess() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.exact_alarm_title)
+                .setMessage(R.string.exact_alarm_message)
+                .setNegativeButton(R.string.later, (dialog, which) -> recreate())
+                .setPositiveButton(R.string.open_settings, (dialog, which) -> openExactAlarmSettings())
+                .show();
+    }
+
+    private void openExactAlarmSettings() {
+        Intent intent = ScheduleManager.exactAlarmSettingsIntent(this);
+        exactAlarmSettingsOpened = true;
+        try {
+            startActivity(intent);
+        } catch (android.content.ActivityNotFoundException unavailable) {
+            exactAlarmSettingsOpened = false;
+            toast(R.string.exact_alarm_required);
+        }
     }
 
     private void refreshDashboard() {

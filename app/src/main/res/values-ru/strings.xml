@@ -8,6 +8,8 @@
     <string name="server_offline">Сервер не в сети</string>
     <string name="server_checking">Проверка сервера…</string>
     <string name="last_update">Обновлено: %1$s</string>
+    <string name="last_ping">Пинг: %1$s</string>
+    <string name="ping_latency_ms">%1$d мс</string>
     <string name="never">никогда</string>
     <string name="wake">Включить</string>
     <string name="shutdown">Выключить</string>
@@ -66,6 +68,18 @@
     <string name="notifications">Системные уведомления</string>
     <string name="notify_alerts">Уведомлять о новых алертах</string>
     <string name="minimum_severity">Минимальная важность</string>
+    <string name="power_schedule">Расписание питания</string>
+    <string name="power_schedule_hint">Ежедневное время задаётся в текущем часовом поясе телефона. На Android 12+ требуется доступ «Будильники и напоминания».</string>
+    <string name="scheduled_wake">Включать сервер ежедневно</string>
+    <string name="scheduled_shutdown">Выключать сервер ежедневно</string>
+    <string name="choose_time">Выбрать время</string>
+    <string name="exact_alarm_title">Разрешить точное расписание?</string>
+    <string name="exact_alarm_message">Разрешите для NAS Manager «Будильники и напоминания», чтобы ежедневное включение и выключение запускались в выбранную минуту. Без этого доступа расписания не активируются.</string>
+    <string name="exact_alarm_required">Нужен доступ к точным будильникам</string>
+    <string name="schedule_wake_requires_mac">Укажите MAC-адрес сервера перед включением по расписанию.</string>
+    <string name="schedule_shutdown_requires_connection">Настройте и сохраните подключение к TrueNAS перед выключением по расписанию.</string>
+    <string name="open_settings">Открыть настройки</string>
+    <string name="later">Позже</string>
     <string name="severity_info">Информация</string>
     <string name="severity_warning">Предупреждение</string>
     <string name="severity_critical">Критично</string>
@@ -88,7 +102,7 @@
     <string name="confirm">Подтвердить</string>
     <string name="not_configured">Для HTTP укажите адрес сервера, имя пользователя и пароль. Для HTTPS также нужны учётные данные: предпочтителен ключ API, либо используйте пароль.</string>
     <string name="privacy_note">Пароль и ключ API шифруются через Android Keystore. HTTP не шифрует сетевой трафик: используйте его только в доверенной локальной сети или через VPN. HTTPS остаётся доступен для защищённого соединения.</string>
-    <string name="version_label">Версия 1.2.0</string>
+    <string name="version_label">Версия 1.3.0</string>
     <string name="active_apps">Запущено %1$d из %2$d</string>
     <string name="active_alerts">Активных уведомлений: %1$d</string>
     <string name="hours_short">%1$d ч %2$d мин</string>

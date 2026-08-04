@@ -3,6 +3,7 @@ package io.github.nasmanager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.util.LruCache;
+import android.view.View;
 import android.widget.ImageView;
 
 import java.io.InputStream;
@@ -10,6 +11,8 @@ import java.io.ByteArrayOutputStream;
 import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -23,7 +26,7 @@ final class AppIconLoader {
 
     private AppIconLoader() { }
 
-    static void load(String url, ImageView target) {
+    static void load(String url, ImageView target, View placeholder) {
         if (url == null || url.trim().isEmpty()) return;
         String key = url.trim();
         android.net.Uri uri = android.net.Uri.parse(key);
@@ -33,11 +36,16 @@ final class AppIconLoader {
         if (cached != null) {
             target.setImageBitmap(cached);
             target.setAlpha(1f);
+            placeholder.setVisibility(View.INVISIBLE);
             return;
         }
         WeakReference<ImageView> reference = new WeakReference<>(target);
+        WeakReference<View> placeholderReference = new WeakReference<>(placeholder);
         EXECUTOR.execute(() -> {
-            Bitmap bitmap = download(key);
+            String rasterUrl = TrueNasDataParser.rasterIconUrl(key);
+            Bitmap loaded = rasterUrl.equals(key) ? download(key) : download(rasterUrl);
+            if (loaded == null && !rasterUrl.equals(key)) loaded = download(key);
+            final Bitmap bitmap = loaded;
             ImageView view = reference.get();
             if (bitmap == null || view == null) return;
             CACHE.put(key, bitmap);
@@ -45,7 +53,9 @@ final class AppIconLoader {
                 ImageView current = reference.get();
                 if (current == null || !key.equals(current.getTag())) return;
                 current.setImageBitmap(bitmap);
-                current.animate().alpha(1f).setDuration(180).start();
+                current.setAlpha(1f);
+                View currentPlaceholder = placeholderReference.get();
+                if (currentPlaceholder != null) currentPlaceholder.setVisibility(View.INVISIBLE);
             });
         });
     }
@@ -71,6 +81,14 @@ final class AppIconLoader {
                     bytes.write(chunk, 0, count);
                 }
                 byte[] encoded = bytes.toByteArray();
+                String contentType = connection.getContentType();
+                String prefix = new String(encoded, 0, Math.min(encoded.length, 512), StandardCharsets.UTF_8)
+                        .toLowerCase(Locale.US);
+                if ((contentType != null && contentType.toLowerCase(Locale.US).contains("svg"))
+                        || prefix.contains("<svg")) {
+                    Bitmap svg = SvgIconDecoder.decode(encoded);
+                    return hasVisiblePixels(svg) ? svg : null;
+                }
                 BitmapFactory.Options bounds = new BitmapFactory.Options();
                 bounds.inJustDecodeBounds = true;
                 BitmapFactory.decodeByteArray(encoded, 0, encoded.length, bounds);
@@ -79,13 +97,25 @@ final class AppIconLoader {
                 BitmapFactory.Options options = new BitmapFactory.Options();
                 options.inSampleSize = sample;
                 Bitmap bitmap = BitmapFactory.decodeByteArray(encoded, 0, encoded.length, options);
-                return bitmap == null ? null : Bitmap.createScaledBitmap(bitmap, 144, 144, true);
+                Bitmap scaled = bitmap == null ? null : Bitmap.createScaledBitmap(bitmap, 144, 144, true);
+                return hasVisiblePixels(scaled) ? scaled : null;
             }
         } catch (Exception ignored) {
             return null;
         } finally {
             if (connection != null) connection.disconnect();
         }
+    }
+
+    private static boolean hasVisiblePixels(Bitmap bitmap) {
+        if (bitmap == null) return false;
+        int width = bitmap.getWidth(), height = bitmap.getHeight();
+        int[] row = new int[width];
+        for (int y = 0; y < height; y++) {
+            bitmap.getPixels(row, 0, width, 0, y, width, 1);
+            for (int color : row) if ((color >>> 24) != 0) return true;
+        }
+        return false;
     }
 
 }

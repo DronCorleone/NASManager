@@ -29,6 +29,15 @@ final class TrueNasClient {
             JSONArray query = new JSONArray().put(new JSONArray()).put(new JSONObject());
             try { parsePools(result, asArray(client.call("pool.query", query))); } catch (Exception ignored) { }
             try { parseApps(result, asArray(client.call("app.query", query))); } catch (Exception ignored) { }
+            try {
+                JSONObject catalogOptions = new JSONObject()
+                        .put("cache", true)
+                        .put("cache_only", true)
+                        .put("retrieve_all_trains", true)
+                        .put("trains", new JSONArray());
+                TrueNasDataParser.mergeCatalogIcons(result,
+                        toJava(client.call("catalog.apps", new JSONArray().put(catalogOptions))));
+            } catch (Exception ignored) { }
             try { parseInterfaces(result, asArray(client.call("interface.query", query))); } catch (Exception ignored) { }
             try { parseAlerts(result, asArray(client.call("alert.list", new JSONArray()))); } catch (Exception ignored) { }
 

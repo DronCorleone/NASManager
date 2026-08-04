@@ -36,6 +36,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.Locale;
+import java.util.List;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.time.ZoneId;
@@ -44,12 +45,14 @@ import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
     private static final long PING_INTERVAL_MILLIS = 10_000L;
+    private static final int MAX_LOG_TEXT_CHARS = 64 * 1024;
 
     private enum Tab { OVERVIEW, APPS, ALERTS, SETTINGS }
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ExecutorService pingExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService appStatsExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService appLogsExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private SecureConfigStore store;
     private AppConfig config;
@@ -78,12 +81,19 @@ public final class MainActivity extends Activity {
     private String pendingAppDetailName;
     private volatile AppStatsMonitor appStatsMonitor;
     private volatile int appStatsGeneration;
+    private volatile AppLogsMonitor appLogsMonitor;
+    private volatile int appLogsGeneration;
+    private String selectedLogContainerId;
     private TextView detailCpu;
     private TextView detailMemory;
     private TextView detailNetwork;
     private TextView detailBlock;
     private SparklineView networkGraph;
     private SparklineView blockGraph;
+    private LinearLayout detailLogContainers;
+    private TextView detailLogStatus;
+    private TextView detailLogs;
+    private ScrollView detailLogsScroll;
     private boolean exactAlarmSettingsOpened;
     private boolean dark;
     private int background;
@@ -118,6 +128,8 @@ public final class MainActivity extends Activity {
         pingExecutor.shutdownNow();
         stopAppStats();
         appStatsExecutor.shutdownNow();
+        stopAppLogs();
+        appLogsExecutor.shutdownNow();
         executor.shutdownNow();
         super.onDestroy();
     }
@@ -135,13 +147,17 @@ public final class MainActivity extends Activity {
             ScheduleManager.sync(this, config);
         }
         startPingLoop();
-        if (selectedApp != null) startAppStats(selectedApp);
+        if (selectedApp != null) {
+            startAppStats(selectedApp);
+            startAppLogs(selectedApp);
+        }
     }
 
     @Override
     protected void onPause() {
         stopPingLoop();
         stopAppStats();
+        stopAppLogs();
         super.onPause();
     }
 
@@ -260,6 +276,10 @@ public final class MainActivity extends Activity {
         detailBlock = null;
         networkGraph = null;
         blockGraph = null;
+        detailLogContainers = null;
+        detailLogStatus = null;
+        detailLogs = null;
+        detailLogsScroll = null;
         if (currentTab == Tab.SETTINGS) renderSettings();
         else if (currentTab == Tab.APPS && selectedApp != null) renderAppDetail(selectedApp);
         else if (currentTab == Tab.APPS) renderApps();
@@ -466,19 +486,23 @@ public final class MainActivity extends Activity {
         image.setContentDescription(null);
         frame.addView(image, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        AppIconLoader.load(app.iconUrl, image);
+        AppIconLoader.load(app.iconUrl, image, fallback);
         return frame;
     }
 
     private void openAppDetail(DashboardData.AppInfo app) {
         selectedApp = app;
+        selectedLogContainerId = null;
         renderCurrentTab();
         mainScroll.scrollTo(0, 0);
         startAppStats(app);
+        startAppLogs(app);
     }
 
     private void closeAppDetail() {
         stopAppStats();
+        stopAppLogs();
+        selectedLogContainerId = null;
         selectedApp = null;
     }
 
@@ -541,6 +565,37 @@ public final class MainActivity extends Activity {
         load.addView(blockGraph, graphParams());
         content.addView(load, cardParams());
         updateAppStatsViews(app.stats);
+
+        LinearLayout logs = cardWithTitle(getString(R.string.logs));
+        detailLogStatus = label(getString(R.string.logs_loading), 13, muted, false);
+        logs.addView(detailLogStatus);
+        HorizontalScrollView containerScroll = new HorizontalScrollView(this);
+        containerScroll.setHorizontalScrollBarEnabled(false);
+        detailLogContainers = row();
+        containerScroll.addView(detailLogContainers);
+        logs.addView(containerScroll, sectionParams());
+        Button reloadLogs = actionButton(getString(R.string.refresh_logs), false);
+        reloadLogs.setOnClickListener(v -> startAppLogs(app));
+        logs.addView(reloadLogs, compactButtonParams());
+
+        detailLogs = label("", 11, color("#D1FAE5"), false);
+        detailLogs.setTypeface(Typeface.MONOSPACE);
+        detailLogs.setTextIsSelectable(true);
+        detailLogs.setPadding(dp(10), dp(10), dp(10), dp(10));
+        GradientDrawable logBackground = new GradientDrawable();
+        logBackground.setColor(color("#071019"));
+        logBackground.setCornerRadius(dp(10));
+        detailLogs.setBackground(logBackground);
+        detailLogsScroll = new ScrollView(this);
+        detailLogsScroll.setFillViewport(true);
+        detailLogsScroll.setNestedScrollingEnabled(true);
+        detailLogsScroll.addView(detailLogs, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams logPanelParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(240));
+        logPanelParams.topMargin = dp(10);
+        logs.addView(detailLogsScroll, logPanelParams);
+        content.addView(logs, cardParams());
     }
 
     private TextView valueRow(LinearLayout parent, String caption) {
@@ -595,6 +650,148 @@ public final class MainActivity extends Activity {
         appStatsGeneration++;
         AppStatsMonitor monitor = appStatsMonitor;
         appStatsMonitor = null;
+        if (monitor != null) monitor.close();
+    }
+
+    private void startAppLogs(DashboardData.AppInfo app) {
+        stopAppLogs();
+        if (app == null || config == null || !config.isApiConfigured()
+                || detailLogStatus == null || detailLogContainers == null) return;
+        detailLogContainers.removeAllViews();
+        if (detailLogs != null) detailLogs.setText("");
+        detailLogStatus.setText(getString(R.string.logs_loading));
+        final int generation = ++appLogsGeneration;
+        final AppConfig logsConfig = config;
+        appLogsExecutor.execute(() -> {
+            try {
+                List<DashboardData.ContainerInfo> containers =
+                        new AppLogsClient(logsConfig).listContainers(app.name);
+                runOnUiThread(() -> {
+                    if (generation != appLogsGeneration || selectedApp != app) return;
+                    showLogContainers(app, containers);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (generation != appLogsGeneration || selectedApp != app) return;
+                    if (!app.containers.isEmpty()) showLogContainers(app, app.containers);
+                    else showLogsError(error);
+                });
+            }
+        });
+    }
+
+    private void showLogContainers(DashboardData.AppInfo app,
+                                   List<DashboardData.ContainerInfo> containers) {
+        if (detailLogContainers == null || detailLogStatus == null) return;
+        detailLogContainers.removeAllViews();
+        if (containers == null || containers.isEmpty()) {
+            detailLogStatus.setText(getString(R.string.logs_no_containers));
+            return;
+        }
+        DashboardData.ContainerInfo selected = null;
+        for (DashboardData.ContainerInfo container : containers) {
+            if (container.id.equals(selectedLogContainerId)) selected = container;
+        }
+        if (selected == null) {
+            for (DashboardData.ContainerInfo container : containers) {
+                if ("RUNNING".equalsIgnoreCase(container.state)) {
+                    selected = container;
+                    break;
+                }
+            }
+        }
+        if (selected == null) selected = containers.get(0);
+        selectedLogContainerId = selected.id;
+
+        for (DashboardData.ContainerInfo container : containers) {
+            boolean active = container.id.equals(selectedLogContainerId);
+            String name = containerDisplayName(container);
+            Button button = actionButton(getString(R.string.log_container_value,
+                    name, localizedContainerState(container.state)), active);
+            button.setOnClickListener(v -> {
+                if (container.id.equals(selectedLogContainerId)) return;
+                selectedLogContainerId = container.id;
+                showLogContainers(app, containers);
+            });
+            detailLogContainers.addView(button, logContainerButtonParams());
+        }
+        startAppLogMonitor(app, selected);
+    }
+
+    private void startAppLogMonitor(DashboardData.AppInfo app,
+                                    DashboardData.ContainerInfo container) {
+        stopAppLogs();
+        selectedLogContainerId = container.id;
+        if (detailLogs != null) detailLogs.setText("");
+        if (detailLogStatus != null) detailLogStatus.setText(getString(
+                R.string.logs_connecting, containerDisplayName(container)));
+        final int generation = ++appLogsGeneration;
+        final AppConfig logsConfig = config;
+        appLogsExecutor.execute(() -> {
+            AppLogsMonitor monitor = null;
+            try {
+                monitor = new AppLogsMonitor(logsConfig, app.name, container.id);
+                if (generation != appLogsGeneration) {
+                    monitor.close();
+                    return;
+                }
+                appLogsMonitor = monitor;
+                runOnUiThread(() -> {
+                    if (generation == appLogsGeneration && detailLogStatus != null) {
+                        detailLogStatus.setText(getString(
+                                R.string.logs_live, containerDisplayName(container)));
+                    }
+                });
+                while (generation == appLogsGeneration && !Thread.currentThread().isInterrupted()) {
+                    DashboardData.AppLogEntry entry = monitor.next();
+                    runOnUiThread(() -> {
+                        if (generation != appLogsGeneration || selectedApp != app) return;
+                        appendLogEntry(entry);
+                    });
+                }
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (generation == appLogsGeneration && selectedApp == app) showLogsError(error);
+                });
+            } finally {
+                if (monitor != null) monitor.close();
+                if (appLogsMonitor == monitor) appLogsMonitor = null;
+            }
+        });
+    }
+
+    private void appendLogEntry(DashboardData.AppLogEntry entry) {
+        if (detailLogs == null || entry == null) return;
+        String timestamp = entry.timestamp == null ? "" : entry.timestamp.trim();
+        String data = entry.data == null ? "" : entry.data;
+        String line = (timestamp.isEmpty() ? "" : "[" + timestamp + "] ") + data;
+        if (!line.endsWith("\n")) line += "\n";
+        if (line.length() > MAX_LOG_TEXT_CHARS) {
+            line = line.substring(0, MAX_LOG_TEXT_CHARS - 2) + "…\n";
+        }
+        StringBuilder combined = new StringBuilder(detailLogs.getText()).append(line);
+        if (combined.length() > MAX_LOG_TEXT_CHARS) {
+            int overflow = combined.length() - MAX_LOG_TEXT_CHARS;
+            int nextLine = combined.indexOf("\n", overflow);
+            combined.delete(0, nextLine >= 0 ? nextLine + 1 : overflow);
+        }
+        detailLogs.setText(combined);
+        if (detailLogsScroll != null) {
+            detailLogsScroll.post(() -> detailLogsScroll.fullScroll(View.FOCUS_DOWN));
+        }
+    }
+
+    private void showLogsError(Exception error) {
+        if (detailLogStatus == null) return;
+        String reason = error == null || error.getMessage() == null || error.getMessage().trim().isEmpty()
+                ? getString(R.string.no_data) : error.getMessage().trim();
+        detailLogStatus.setText(getString(R.string.logs_unavailable, reason));
+    }
+
+    private void stopAppLogs() {
+        appLogsGeneration++;
+        AppLogsMonitor monitor = appLogsMonitor;
+        appLogsMonitor = null;
         if (monitor != null) monitor.close();
     }
 
@@ -1033,7 +1230,10 @@ public final class MainActivity extends Activity {
                 pendingAppDetailName = null;
                 if (reopened != null && currentTab == Tab.APPS) selectedApp = reopened;
                 renderCurrentTab();
-                if (selectedApp == reopened && reopened != null) startAppStats(reopened);
+                if (selectedApp == reopened && reopened != null) {
+                    startAppStats(reopened);
+                    startAppLogs(reopened);
+                }
             });
         });
     }
@@ -1134,6 +1334,26 @@ public final class MainActivity extends Activity {
         if (state.contains("DEPLOY")) return getString(R.string.deploying);
         if (state.equalsIgnoreCase("STOPPED") || state.equalsIgnoreCase("INACTIVE")) return getString(R.string.stopped);
         return state;
+    }
+
+    private String localizedContainerState(String state) {
+        if (state == null || state.trim().isEmpty() || "UNKNOWN".equalsIgnoreCase(state)) {
+            return getString(R.string.no_data);
+        }
+        if ("RUNNING".equalsIgnoreCase(state)) return getString(R.string.running);
+        if ("EXITED".equalsIgnoreCase(state)) return getString(R.string.container_exited);
+        if ("CRASHED".equalsIgnoreCase(state)) return getString(R.string.container_crashed);
+        if ("STARTING".equalsIgnoreCase(state)) return getString(R.string.container_starting);
+        if ("CREATED".equalsIgnoreCase(state)) return getString(R.string.container_created);
+        return state;
+    }
+
+    private static String containerDisplayName(DashboardData.ContainerInfo container) {
+        if (container == null) return "—";
+        if (container.serviceName != null && !container.serviceName.trim().isEmpty()) {
+            return container.serviceName.trim();
+        }
+        return container.id == null || container.id.trim().isEmpty() ? "—" : container.id.trim();
     }
 
     private String localizedAction(String action) {
@@ -1340,6 +1560,12 @@ public final class MainActivity extends Activity {
 
     private LinearLayout.LayoutParams compactButtonParams() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(112), dp(44));
+        params.setMargins(0, 0, dp(8), 0);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams logContainerButtonParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(168), dp(44));
         params.setMargins(0, 0, dp(8), 0);
         return params;
     }

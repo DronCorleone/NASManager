@@ -12,7 +12,9 @@
 - ежедневное расписание включения и выключения сервера;
 - настраиваемый dashboard: пулы, интерфейс и IP-адрес, CPU и его температура, RAM, uptime, приложения и алерты;
 - карточки приложений с иконкой, состоянием, версией, ревизией каталога, WebUI, портами и контейнерами;
+- резервный поиск иконок в каталоге TrueNAS и чистый буквенный placeholder, если приложение не публикует изображение;
 - текущая нагрузка приложений: CPU, память, сетевой и блочный I/O с компактными графиками;
+- последние и поступающие в реальном времени логи каждого контейнера после секции «Нагрузка»;
 - Start / Stop / Deploy приложений;
 - отображение и запуск обновлений приложений;
 - фильтрация алертов и Android-уведомления о новых событиях;
@@ -24,15 +26,15 @@
 
 ## Установка
 
-> **Переход с v1.0.0:** релизы начиная с v1.1.0 подписаны новым постоянным release-key. Android не сможет обновить v1.0.0 напрямую — удалите старую версию перед установкой. v1.4.0 устанавливается поверх v1.1.0–v1.3.0 штатно.
+> **Переход с v1.0.0:** релизы начиная с v1.1.0 подписаны новым постоянным release-key. Android не сможет обновить v1.0.0 напрямую — удалите старую версию перед установкой. v1.5.0 устанавливается поверх v1.1.0–v1.4.0 штатно.
 
-1. Откройте [Releases](../../releases) и скачайте `NASManager-v1.4.0.apk`.
+1. Откройте [Releases](../../releases) и скачайте `NASManager-v1.5.0.apk`.
 2. Разрешите установку приложений из выбранного браузера или файлового менеджера.
 3. Установите APK и откройте **NAS Manager**.
 
 ## Настройка TrueNAS
 
-Основной сценарий v1.4.0 — подключение внутри доверенной локальной сети:
+Основной сценарий v1.5.0 — подключение внутри доверенной локальной сети:
 
 1. Создайте в TrueNAS отдельного служебного пользователя без двухфакторной аутентификации и выдайте ему только необходимые роли. Подробности: [настройка сервера](SERVER_SETUP_RU.md).
 2. В NAS Manager откройте **Настройки** и укажите `http://<локальный-IP>`, имя пользователя и его пароль.
@@ -52,11 +54,15 @@ HTTPS остаётся доступен как дополнительный ре
 
 ## Приложения и расширенные ресурсы
 
-Список приложений показывает иконку и фактическое состояние. Нажатие открывает карточку с названием, версией приложения, **ревизией каталога** (техническое поле `source.version`), ссылкой WebUI, портами и контейнерами. В секции нагрузки показываются CPU, память, сетевой I/O (входящий/исходящий, байт/с) и блочный I/O (чтение/запись, MiB) с графиками по данным `app.stats`.
+Список приложений показывает иконку и фактическое состояние. Нажатие открывает карточку с названием, версией приложения, **ревизией каталога** (техническое поле `source.version`), ссылкой WebUI, портами и контейнерами. В секции нагрузки показываются CPU, память, сетевой I/O (входящий/исходящий, байт/с) и блочный I/O (чтение/запись, MiB) с графиками по данным `app.stats`. Сразу после «Нагрузка» находится секция логов: контейнер выбирается из списка приложения, последние 200 и новые строки поступают через динамическое событие `app.container_log_follow`. Кнопка обновления заново открывает поток, а локальный текстовый буфер ограничен 64 КиБ.
+
+**Документированные факты API.** В схемах TrueNAS SCALE 25.04/25.10 [`app.query`](https://api.truenas.com/v25.10/api_methods_app.query.html) возвращает объект `metadata`, но не фиксирует в его публичной схеме ключ иконки. Поддерживаемые [`catalog.apps`](https://api.truenas.com/v25.10/api_methods_catalog.apps.html) и [`catalog.get_app_details`](https://api.truenas.com/v25.10/api_methods_catalog.get_app_details.html) явно возвращают `icon_url`. Для логов документировано событие [`app.container_log_follow`](https://api.truenas.com/v25.10/api_events_app.container_log_follow.html) с параметрами `app_name`, `container_id`, `tail_lines` и полями `data`, `timestamp`.
+
+**Вывод и fallback NAS Manager.** Сначала приложение использует доступный URL из метаданных установленного приложения и совместимых вложенных полей `source`, затем best-effort запрашивает каталог TrueNAS; если валидного HTTP(S)-изображения нет или загрузка завершилась ошибкой, остаётся только буквенный placeholder. Каталоговые SVG обрабатываются локальным dependency-free renderer. Placeholder удаляется перед показом успешно загруженной картинки, поэтому буква не должна просвечивать или накладываться на неё. Поскольку внутреннее содержимое `metadata` не является зафиксированным контрактом API, каталог считается основным документированным fallback; отсутствие `CATALOG_READ` не ломает результат `app.query` и остальные части dashboard.
 
 В ресурсах отображаются имя сетевого интерфейса (например, `eno1`), его адрес, загрузка и температура CPU, использование памяти и время работы. Имена интерфейсов не фиксированы: приложение показывает данные, возвращённые конкретным TrueNAS.
 
-Для карточек и статистики `app.stats` служебному пользователю нужна роль `APPS_READ`. Роль `REPORTING_READ` разрешает системный поток `reporting.realtime` — CPU, память, температуру и скорости интерфейсов; `NETWORK_INTERFACE_READ` нужна для адресов сетевых интерфейсов. Если версия TrueNAS не отдаёт поле, роль отсутствует, метрика временно недоступна или у приложения нет WebUI, NAS Manager оставляет остальной экран рабочим и показывает «Нет данных»/скрывает неприменимую кнопку. Отсутствие одной метрики не должно блокировать пинг, управление питанием или загрузку других карточек.
+Для карточек, `app.stats`, списка контейнеров и `app.container_log_follow` служебному пользователю нужна роль `APPS_READ`. Для документированного каталогового fallback иконок нужна `CATALOG_READ`. Роль `REPORTING_READ` разрешает системный поток `reporting.realtime` — CPU, память, температуру и скорости интерфейсов; `NETWORK_INTERFACE_READ` нужна для адресов сетевых интерфейсов. Если версия TrueNAS не отдаёт поле, роль отсутствует, метрика временно недоступна или у приложения нет WebUI, NAS Manager оставляет остальной экран рабочим и показывает «Нет данных»/скрывает неприменимую кнопку. Отсутствие одной метрики, иконки или потока логов не должно блокировать пинг, управление питанием или загрузку других карточек.
 
 В разделе **Настройки → Расписание питания** можно независимо включить ежедневное включение и выключение. Время использует текущий часовой пояс телефона. Для Android 12 и новее необходимо разрешить NAS Manager доступ **Будильники и напоминания**; без него расписания остаются неактивными. Телефон должен быть включён и находиться в нужной LAN/VPN в момент выполнения: включение отправляет Wake-on-LAN, а выключение создаёт новое API-соединение с сохранёнными учётными данными. После перезагрузки телефона, обновления приложения, ручной смены времени или часового пояса расписание восстанавливается автоматически.
 
@@ -101,7 +107,7 @@ gradle assembleDebug
 
 ## English
 
-NAS Manager is a native Android client for TrueNAS SCALE. It provides Wake-on-LAN, a foreground-only 10-second TCP reachability check, an animated deep pull for an immediate unauthenticated ping, and a separate top-right reconnect button for a fresh API/WebSocket session. App cards include icons, status, catalog/app versions, WebUI, ports, containers, and live CPU/memory/network/block-I/O data. System resources include interface/address, CPU load and temperature, memory, and uptime. Local HTTP is intended only for a trusted LAN or VPN; optional HTTPS is supported. Exact schedules require Alarms &amp; reminders access on Android 12+. Android 8.0+ is supported.
+NAS Manager is a native Android client for TrueNAS SCALE. It provides Wake-on-LAN, a foreground-only 10-second TCP reachability check, an animated deep pull for an immediate unauthenticated ping, and a separate top-right reconnect button for a fresh API/WebSocket session. App cards include non-overlapping icons with catalog fallback, status, catalog/app versions, WebUI, ports, containers, live CPU/memory/network/block-I/O data, and per-container live logs. System resources include interface/address, CPU load and temperature, memory, and uptime. Local HTTP is intended only for a trusted LAN or VPN; optional HTTPS is supported. Exact schedules require Alarms &amp; reminders access on Android 12+. Android 8.0+ is supported.
 
 ## License
 

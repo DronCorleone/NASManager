@@ -154,8 +154,11 @@ final class TrueNasWebSocketClient implements AutoCloseable {
             queue = new ArrayDeque<>();
             eventBacklog.put(key, queue);
         }
-        // A bounded backlog prevents a slow consumer from retaining an unbounded stats history.
-        if (queue.size() >= 4) queue.removeFirst();
+        // A dynamic log source can emit its requested tail before core.subscribe's response is
+        // processed. Preserve up to the documented default tail (500), while keeping high-rate
+        // metric sources at the much smaller latest-sample backlog used by the dashboard.
+        int limit = "app.container_log_follow".equals(key) ? 500 : 4;
+        if (queue.size() >= limit) queue.removeFirst();
         queue.addLast(fields == null ? JSONObject.NULL : fields);
     }
 

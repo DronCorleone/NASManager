@@ -66,6 +66,18 @@
     <string name="block_io_values">Чтение: %1$s · Запись: %2$s</string>
     <string name="network_graph_description">История сетевого трафика: входящий и исходящий</string>
     <string name="block_graph_description">История блочного ввода-вывода: чтение и запись</string>
+    <string name="logs">Логи</string>
+    <string name="logs_loading">Загрузка контейнеров…</string>
+    <string name="logs_no_containers">TrueNAS не вернул контейнеры этого приложения.</string>
+    <string name="refresh_logs">Обновить логи</string>
+    <string name="log_container_value">%1$s · %2$s</string>
+    <string name="logs_connecting">Подключение к логам %1$s…</string>
+    <string name="logs_live">Логи в реальном времени · %1$s</string>
+    <string name="logs_unavailable">Логи недоступны: %1$s</string>
+    <string name="container_exited">Завершён</string>
+    <string name="container_crashed">Авария</string>
+    <string name="container_starting">Запускается</string>
+    <string name="container_created">Создан</string>
     <string name="no_apps">TrueNAS не вернул приложения.</string>
     <string name="no_alerts">Активных уведомлений нет.</string>
     <string name="dismiss">Скрыть</string>
@@ -132,7 +144,7 @@
     <string name="confirm">Подтвердить</string>
     <string name="not_configured">Для HTTP укажите адрес сервера, имя пользователя и пароль. Для HTTPS также нужны учётные данные: предпочтителен ключ API, либо используйте пароль.</string>
     <string name="privacy_note">Пароль и ключ API шифруются через Android Keystore. HTTP не шифрует сетевой трафик: используйте его только в доверенной локальной сети или через VPN. HTTPS остаётся доступен для защищённого соединения.</string>
-    <string name="version_label">Версия 1.4.0</string>
+    <string name="version_label">Версия 1.5.0</string>
     <string name="active_apps">Запущено %1$d из %2$d</string>
     <string name="active_alerts">Активных уведомлений: %1$d</string>
     <string name="hours_short">%1$d ч %2$d мин</string>

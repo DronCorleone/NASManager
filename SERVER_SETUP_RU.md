@@ -1,6 +1,6 @@
 # Настройка TrueNAS SCALE для NAS Manager
 
-NAS Manager 1.4.0 в первую очередь рассчитан на локальное подключение по `http://` → `ws://<сервер>/api/current`. Этот режим не требует SSL-сертификата, но использует имя пользователя и пароль.
+NAS Manager 1.5.0 в первую очередь рассчитан на локальное подключение по `http://` → `ws://<сервер>/api/current`. Этот режим не требует SSL-сертификата, но использует имя пользователя и пароль.
 
 > HTTP не шифрует учётные данные и ответы TrueNAS. Используйте его только в доверенной изолированной локальной сети либо внутри VPN. Не открывайте Web UI/API TrueNAS в интернет.
 
@@ -17,7 +17,7 @@ NAS Manager 1.4.0 в первую очередь рассчитан на лок�
 5. Отключите Shell/SSH и SMB-доступ, если они этому пользователю не нужны.
 6. Выдайте только необходимые роли.
 
-Для карточек приложений и данных `app.stats` выдайте `APPS_READ`; для системного потока `reporting.realtime` (CPU, память, температура и скорости интерфейсов) — `REPORTING_READ`; для адресов интерфейсов — `NETWORK_INTERFACE_READ`. Для остальных частей dashboard также нужны права чтения System, Pool и Alerts. Для управления приложениями нужна роль `APPS_WRITE`. Для удалённого выключения TrueNAS требуется административное право, обычно `FULL_ADMIN`. Если выключение из приложения не нужно, не выдавайте эту роль.
+Для карточек приложений, данных `app.stats`, списка контейнеров и их логов выдайте `APPS_READ`; для резервного получения иконок из каталога — `CATALOG_READ`; для системного потока `reporting.realtime` (CPU, память, температура и скорости интерфейсов) — `REPORTING_READ`; для адресов интерфейсов — `NETWORK_INTERFACE_READ`. Для остальных частей dashboard также нужны права чтения System, Pool и Alerts. Для управления приложениями нужна роль `APPS_WRITE`. Для удалённого выключения TrueNAS требуется административное право, обычно `FULL_ADMIN`. Если выключение из приложения не нужно, не выдавайте эту роль.
 
 Названия и доступность дополнительных ролей могут отличаться между версиями TrueNAS SCALE. После настройки проверьте каждую нужную операцию кнопкой **Проверить подключение** и с экранов приложения. Соблюдайте принцип минимальных привилегий.
 
@@ -65,7 +65,25 @@ HTTPS сохраняется для сетей, где доступен корр
 
 Глубокий свайп вниз из верхней позиции запускает такой же единичный внеочередной пинг. Экран заметно смещается вслед за жестом; после отпускания он не сбрасывает dashboard и не выполняет аутентификацию. Полное API-переподключение перенесено на кнопку ↻ в правом верхнем углу: она открывает новый WebSocket-сеанс `/api/current` и повторно запрашивает все доступные данные.
 
-Для карточек приложений (иконка, статус, версия приложения, **ревизия каталога** из `source.version`, WebUI, порты и контейнеры) и метрик `app.stats` нужна `APPS_READ`. Для системных CPU, памяти, температуры и скоростей интерфейсов из `reporting.realtime` нужна `REPORTING_READ`; для адресов интерфейсов — `NETWORK_INTERFACE_READ`. Если отдельный метод или поле недоступны в установленной версии TrueNAS либо запрещены ролью, приложение выводит «Нет данных» или скрывает неприменимую кнопку, продолжая показывать остальные доступные разделы.
+Для карточек приложений (статус, версия приложения, **ревизия каталога** из `source.version`, WebUI, порты и контейнеры), метрик `app.stats` и логов нужна `APPS_READ`. Для резервного получения иконок через каталог нужна `CATALOG_READ`. Для системных CPU, памяти, температуры и скоростей интерфейсов из `reporting.realtime` нужна `REPORTING_READ`; для адресов интерфейсов — `NETWORK_INTERFACE_READ`. Если отдельный метод или поле недоступны в установленной версии TrueNAS либо запрещены ролью, приложение выводит «Нет данных» или скрывает неприменимую кнопку, продолжая показывать остальные доступные разделы.
+
+### Иконки приложений: что гарантирует API
+
+**Документировано TrueNAS:** [`app.query` 25.04](https://api.truenas.com/v25.04/api_methods_app.query.html) и [`app.query` 25.10](https://api.truenas.com/v25.10/api_methods_app.query.html) возвращают `metadata` как объект, но публичная схема не обещает в нём конкретный ключ `icon` или `icon_url`; метод требует `APPS_READ`. [`catalog.apps` 25.04](https://api.truenas.com/v25.04/api_methods_catalog.apps.html) и [`catalog.apps` 25.10](https://api.truenas.com/v25.10/api_methods_catalog.apps.html) явно возвращают допускающий `null` `icon_url` и требуют `CATALOG_READ`.
+
+**Вывод NAS Manager:** значения `metadata.icon_url`, `metadata.icon` и совместимые вложенные варианты `source` используются как быстрые best-effort источники, а `catalog.apps.icon_url` — как документированный fallback. Каталоговый запрос выполняется best-effort: отсутствие `CATALOG_READ` не отменяет уже полученный `app.query` и не блокирует dashboard. Каталоговые SVG обрабатываются локальным dependency-free renderer. Это не гарантирует картинку для custom app или записи каталога с `icon_url: null`; в таком случае корректным результатом является буквенный placeholder. При успешной загрузке изображения placeholder полностью скрывается, а не рисуется под ним.
+
+### Логи контейнеров
+
+NAS Manager не вызывает shell/SSH и не использует deprecated REST. Поддерживаемый источник в TrueNAS SCALE 25.04/25.10 — динамическое JSON-RPC событие [`app.container_log_follow` 25.04](https://api.truenas.com/v25.04/api_events_app.container_log_follow.html) / [`25.10`](https://api.truenas.com/v25.10/api_events_app.container_log_follow.html). Подписка передаёт:
+
+- `app_name` — имя приложения;
+- `container_id` — ID выбранного контейнера;
+- `tail_lines` — число последних строк, по умолчанию API использует 500; `null` означает все доступные строки.
+
+События содержат `data` и допускающий `null` `timestamp`. Требуемая роль — `APPS_READ`. ID контейнеров документирован в `app.query.active_workloads.container_details[]`; при необходимости отдельный [`app.container_ids`](https://api.truenas.com/v25.10/api_methods_app.container_ids.html) также требует `APPS_READ` и может запрашиваться с `alive_only: false`.
+
+**Практический вывод:** приложение подписывается только на выбранный контейнер, запрашивает последние 200 строк и ограничивает отображаемый текст 64 КиБ, чтобы не удерживать неограниченный объём логов на телефоне. Кнопка **Обновить логи** пересоздаёт выбранный поток. При смене контейнера, уходе с карточки или сворачивании приложения прежняя подписка должна закрываться. Отсутствие строк не считается ошибкой: контейнер мог ещё ничего не вывести либо его журнал недоступен после пересоздания.
 
 NAS Manager использует поддерживаемый JSON-RPC 2.0 по `/api/current`. Deprecated REST `/api/v2.0` и старые `chart.release.*` не используются.
 
@@ -84,8 +102,10 @@ NAS Manager использует поддерживаемый JSON-RPC 2.0 по 
 ## Типовые ошибки
 
 - **AUTH_ERR / Invalid credentials** — неверное имя/пароль; у пользователя включена 2FA; для HTTPS ключ отозван, истёк или принадлежит другому пользователю.
-- **Attempt to use over an insecure transport** — API key был использован другим клиентом через HTTP. Сбросьте/удалите ключ и найдите этот клиент; NAS Manager 1.4.0 API key по HTTP не отправляет.
-- **Нет иконки/WebUI/графика или показано «Нет данных»** — проверьте роли `APPS_READ`, `REPORTING_READ`, `NETWORK_INTERFACE_READ`. Некоторые приложения не публикуют WebUI, а состав статистики зависит от версии TrueNAS и состояния контейнеров.
+- **Attempt to use over an insecure transport** — API key был использован другим клиентом через HTTP. Сбросьте/удалите ключ и найдите этот клиент; NAS Manager 1.5.0 API key по HTTP не отправляет.
+- **Нет иконки** — проверьте `APPS_READ` и `CATALOG_READ`. У custom app или каталожной записи с `icon_url: null` штатно останется буквенный placeholder.
+- **Нет WebUI/графика или показано «Нет данных»** — проверьте роли `APPS_READ`, `REPORTING_READ`, `NETWORK_INTERFACE_READ`. Некоторые приложения не публикуют WebUI, а состав статистики зависит от версии TrueNAS и состояния контейнеров.
+- **Логи пусты / недоступны** — проверьте `APPS_READ`, выберите контейнер в карточке и убедитесь, что контейнер существует. После пересоздания приложения старый `container_id` больше не подходит; обновите карточку.
 - **Расписание не выполняется** — проверьте доступ «Будильники и напоминания» на Android 12+, отсутствие принудительной остановки, подключение телефона к LAN/VPN и корректность ручного включения/выключения.
 - **301 / 308 / WebSocket handshake failed** — сервер перенаправляет HTTP на HTTPS; отключите redirect либо настройте HTTPS-режим.
 - **Connection refused / timeout** — неверный IP/порт, Web UI слушает другой интерфейс, Wi-Fi isolation или firewall блокирует доступ.
@@ -93,4 +113,4 @@ NAS Manager использует поддерживаемый JSON-RPC 2.0 по 
 - **Not authorized / permission denied** — служебному пользователю не хватает роли для запрошенного раздела или действия.
 - **RESTAPIUsage** — другой старый клиент обращается к deprecated `/api/v2.0`. NAS Manager использует JSON-RPC `/api/current`; алерт отражает обращения за последние 24 часа и может исчезнуть не сразу.
 
-Официальная документация: [API access](https://www.truenas.com/docs/scale/25.10/api/), [Managing API Keys](https://www.truenas.com/docs/scale/25.10/scaletutorials/toptoolbar/managingapikeys/), [Certificates](https://www.truenas.com/docs/scale/25.10/scaletutorials/credentials/certificates/), [JSON-RPC 2.0](https://api.truenas.com/v25.10/jsonrpc.html), [`auth.login_ex`](https://api.truenas.com/v25.10/api_methods_auth.login_ex.html).
+Официальная документация: [API access](https://www.truenas.com/docs/scale/25.10/api/), [Managing API Keys](https://www.truenas.com/docs/scale/25.10/scaletutorials/toptoolbar/managingapikeys/), [Certificates](https://www.truenas.com/docs/scale/25.10/scaletutorials/credentials/certificates/), [JSON-RPC 2.0](https://api.truenas.com/v25.10/jsonrpc.html), [`auth.login_ex`](https://api.truenas.com/v25.10/api_methods_auth.login_ex.html), [`app.query`](https://api.truenas.com/v25.10/api_methods_app.query.html), [`catalog.apps`](https://api.truenas.com/v25.10/api_methods_catalog.apps.html), [`app.container_ids`](https://api.truenas.com/v25.10/api_methods_app.container_ids.html), [`app.container_log_follow`](https://api.truenas.com/v25.10/api_events_app.container_log_follow.html).

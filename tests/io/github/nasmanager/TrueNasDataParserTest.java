@@ -8,6 +8,7 @@ import java.util.Map;
 public final class TrueNasDataParserTest {
     public static void main(String[] args) {
         parsesAppQueryDetailsAcrossSupportedKeys();
+        parsesIconFallbacksSafely();
         parsesAndSumsAppStats();
         parsesInterfacesAndRealtimeResources();
         toleratesMissingOptionalFields();
@@ -20,7 +21,7 @@ public final class TrueNasDataParserTest {
         Map<String, Object> port = map("container_port", 3001, "protocol", "tcp",
                 "host_ports", list(host));
         Map<String, Object> container = map("id", "abc123", "service_name", "server",
-                "image", "ghcr.io/immich/server:v2", "port_config", list(port));
+                "image", "ghcr.io/immich/server:v2", "state", "running", "port_config", list(port));
         Map<String, Object> workloads = map("containers", 2, "used_ports", list(port),
                 "container_details", list(container));
         Map<String, Object> app = map(
@@ -49,6 +50,7 @@ public final class TrueNasDataParserTest {
         assert parsed.ports.get(0).hostPorts.get(0).hostPort == 2283;
         assert parsed.containers.size() == 1;
         assert "server".equals(parsed.containers.get(0).serviceName);
+        assert "RUNNING".equals(parsed.containers.get(0).state);
         assert "3.1.0_1.2.0".equals(data.apps.get(1).appVersion);
         assert "https://icons/custom.png".equals(data.apps.get(1).iconUrl);
     }
@@ -69,6 +71,34 @@ public final class TrueNasDataParserTest {
         assert stats.networkTxBytesPerSecond == 2575;
         assert stats.blockReadBytes == 2_147_483_648L;
         assert stats.blockWriteBytes == 4096;
+    }
+
+    private static void parsesIconFallbacksSafely() {
+        DashboardData data = new DashboardData();
+        TrueNasDataParser.parseApps(data, list(
+                map("id", "jellyfin", "metadata", map("name", "jellyfin")),
+                map("id", "immich", "metadata", map("name", "immich",
+                        "source", map("logo", map("url", "//cdn.example/immich.png")))),
+                map("id", "filebrowser", "name", "File Browser"),
+                map("id", "custom", "custom_app", true, "metadata", map("name", "private-app")),
+                map("id", "unsafe", "metadata", map("icon_url", "file:///data/secret.png"))));
+
+        Map<String, Object> catalog = map("community", map(
+                "jellyfin", map("name", "jellyfin", "title", "Jellyfin", "icon_url", "https://icons/jellyfin.svg"),
+                "immich", map("name", "immich", "title", "Immich", "icon_url", "https://icons/immich.svg"),
+                "filebrowser", map("name", "filebrowser", "title", "File Browser", "icon_url", "https://icons/filebrowser.png")));
+        TrueNasDataParser.mergeCatalogIcons(data, catalog);
+
+        assert "https://icons/jellyfin.svg".equals(data.apps.get(0).iconUrl);
+        assert "https://cdn.example/immich.png".equals(data.apps.get(1).iconUrl);
+        assert "https://icons/filebrowser.png".equals(data.apps.get(2).iconUrl);
+        assert "".equals(data.apps.get(3).iconUrl);
+        assert "".equals(data.apps.get(4).iconUrl);
+        assert "https://icons/jellyfin.png?size=144#app".equals(
+                TrueNasDataParser.rasterIconUrl("https://icons/jellyfin.SVG?size=144#app"));
+        assert "http://icons/filebrowser.webp?x=1".equals(
+                TrueNasDataParser.rasterIconUrl("http://icons/filebrowser.webp?x=1"));
+        assert "".equals(TrueNasDataParser.rasterIconUrl("file:///private/icon.svg"));
     }
 
     private static void parsesInterfacesAndRealtimeResources() {

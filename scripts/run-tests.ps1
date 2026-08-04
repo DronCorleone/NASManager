@@ -14,12 +14,14 @@ New-Item -ItemType Directory -Force $testOutput | Out-Null
     "$projectRoot\app\src\main\java\io\github\nasmanager\DailyScheduleCalculator.java" `
     "$projectRoot\app\src\main\java\io\github\nasmanager\DashboardData.java" `
     "$projectRoot\app\src\main\java\io\github\nasmanager\TrueNasDataParser.java" `
+    "$projectRoot\app\src\main\java\io\github\nasmanager\AppLogsParser.java" `
     "$projectRoot\tests\io\github\nasmanager\AppConfigSecurityTest.java" `
     "$projectRoot\tests\io\github\nasmanager\WakeOnLanTest.java" `
     "$projectRoot\tests\io\github\nasmanager\DashboardUiFormatterTest.java" `
     "$projectRoot\tests\io\github\nasmanager\ServerReachabilityProbeTest.java" `
     "$projectRoot\tests\io\github\nasmanager\ScheduleManagerTest.java" `
-    "$projectRoot\tests\io\github\nasmanager\TrueNasDataParserTest.java"
+    "$projectRoot\tests\io\github\nasmanager\TrueNasDataParserTest.java" `
+    "$projectRoot\tests\io\github\nasmanager\AppLogsParserTest.java"
 if ($LASTEXITCODE -ne 0) { throw "Test compilation failed" }
 & "$JdkRoot\bin\java.exe" -ea -cp $testOutput io.github.nasmanager.AppConfigSecurityTest
 if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
@@ -32,4 +34,6 @@ if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
 & "$JdkRoot\bin\java.exe" -ea -cp $testOutput io.github.nasmanager.ScheduleManagerTest
 if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
 & "$JdkRoot\bin\java.exe" -ea -cp $testOutput io.github.nasmanager.TrueNasDataParserTest
+if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
+& "$JdkRoot\bin\java.exe" -ea -cp $testOutput io.github.nasmanager.AppLogsParserTest
 if ($LASTEXITCODE -ne 0) { throw "Tests failed" }

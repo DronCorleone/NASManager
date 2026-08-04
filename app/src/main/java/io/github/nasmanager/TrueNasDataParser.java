@@ -2,6 +2,7 @@ package io.github.nasmanager;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -23,7 +24,7 @@ final class TrueNasDataParser {
                     bool(source, "image_updates_available", bool(source, "update_available", false)));
 
             Map<?, ?> metadata = map(source.get("metadata"));
-            app.iconUrl = firstString(metadata, "icon", "icon_url", "");
+            app.iconUrl = appIconUrl(source, metadata);
             app.appVersion = metadata == null ? "" : string(metadata.get("app_version"), "");
             if (app.appVersion.isEmpty()) {
                 app.appVersion = firstString(source, "human_version", "app_version", "");
@@ -185,6 +186,7 @@ final class TrueNasDataParser {
             container.id = firstString(source, "id", "container_id", "");
             container.serviceName = firstString(source, "service_name", "name", "");
             container.image = firstString(source, "image", "image_name", "");
+            container.state = firstString(source, "state", "status", "UNKNOWN").toUpperCase(Locale.US);
             parsePorts(container.ports, list(source.get("port_config")));
             target.add(container);
         }
@@ -217,6 +219,99 @@ final class TrueNasDataParser {
             }
         }
         return "";
+    }
+
+    static void mergeCatalogIcons(DashboardData target, Object catalog) {
+        Map<String, String> icons = new LinkedHashMap<>();
+        collectCatalogIcons(catalog, "", icons);
+        for (DashboardData.AppInfo app : target.apps) {
+            if (!app.iconUrl.isEmpty()) continue;
+            String icon = icons.get(normalizedAppName(app.name));
+            if (icon == null) icon = icons.get(normalizedAppName(app.displayName));
+            if (icon != null) app.iconUrl = icon;
+        }
+    }
+
+    /**
+     * The app.query metadata object is intentionally open-ended. Accept known
+     * icon/logo spellings seen across catalog and custom entries, but keep the
+     * result narrow: only absolute HTTP(S) URLs leave the parser.
+     */
+    private static String appIconUrl(Map<?, ?> app, Map<?, ?> metadata) {
+        String explicit = firstIconUrl(metadata);
+        if (explicit.isEmpty()) explicit = firstIconUrl(map(metadata == null ? null : metadata.get("source")));
+        if (explicit.isEmpty()) explicit = firstIconUrl(map(metadata == null ? null : metadata.get("resources")));
+        if (explicit.isEmpty()) explicit = firstIconUrl(map(app.get("source")));
+        if (explicit.isEmpty()) explicit = firstIconUrl(app);
+        explicit = normalizeHttpUrl(explicit);
+        if (!explicit.isEmpty()) return explicit;
+
+        return "";
+    }
+
+    private static void collectCatalogIcons(Object value, String entryName, Map<String, String> target) {
+        Map<?, ?> source = map(value);
+        if (source == null) return;
+        String iconUrl = normalizeHttpUrl(string(source.get("icon_url"), ""));
+        if (!iconUrl.isEmpty()) {
+            putCatalogIcon(target, entryName, iconUrl);
+            putCatalogIcon(target, string(source.get("name"), ""), iconUrl);
+            putCatalogIcon(target, string(source.get("title"), ""), iconUrl);
+        }
+        for (Map.Entry<?, ?> entry : source.entrySet()) {
+            if (entry.getValue() instanceof Map) {
+                collectCatalogIcons(entry.getValue(), string(entry.getKey(), ""), target);
+            }
+        }
+    }
+
+    private static void putCatalogIcon(Map<String, String> target, String name, String url) {
+        String key = normalizedAppName(name);
+        if (!key.isEmpty() && !target.containsKey(key)) target.put(key, url);
+    }
+
+    private static String normalizedAppName(String value) {
+        if (value == null) return "";
+        return value.toLowerCase(Locale.US).replaceAll("[^a-z0-9]", "");
+    }
+
+    private static String firstIconUrl(Map<?, ?> source) {
+        if (source == null) return "";
+        String[] keys = {"icon_url", "icon", "logo_url", "logo"};
+        for (String key : keys) {
+            Object value = source.get(key);
+            String result = string(value, "");
+            if (value instanceof Map) {
+                Map<?, ?> icon = map(value);
+                result = firstString(icon, "url", "href", "");
+                if (result.isEmpty()) result = string(icon.get("src"), "");
+            }
+            if (!result.isEmpty()) return result;
+        }
+        return "";
+    }
+
+    private static String normalizeHttpUrl(String value) {
+        String result = value == null ? "" : value.trim();
+        if (result.startsWith("//")) result = "https:" + result;
+        String lower = result.toLowerCase(Locale.US);
+        return lower.startsWith("http://") || lower.startsWith("https://") ? result : "";
+    }
+
+    /** Converts a catalog SVG URL to its parallel PNG asset without losing URL parameters. */
+    static String rasterIconUrl(String value) {
+        String result = normalizeHttpUrl(value);
+        if (result.isEmpty()) return "";
+        int query = result.indexOf('?');
+        int fragment = result.indexOf('#');
+        int pathEnd = result.length();
+        if (query >= 0) pathEnd = Math.min(pathEnd, query);
+        if (fragment >= 0) pathEnd = Math.min(pathEnd, fragment);
+        String path = result.substring(0, pathEnd);
+        if (path.toLowerCase(Locale.US).endsWith(".svg")) {
+            return path.substring(0, path.length() - 4) + ".png" + result.substring(pathEnd);
+        }
+        return result;
     }
 
     private static Map<?, ?> map(Object value) {

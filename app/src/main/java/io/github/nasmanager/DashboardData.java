@@ -60,7 +60,13 @@ final class DashboardData {
         String id = "";
         String serviceName = "";
         String image = "";
+        String state = "UNKNOWN";
         final List<PortInfo> ports = new ArrayList<>();
+    }
+
+    static final class AppLogEntry {
+        String timestamp = "";
+        String data = "";
     }
 
     static final class AppStats {

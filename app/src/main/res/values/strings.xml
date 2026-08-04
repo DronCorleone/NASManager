@@ -66,6 +66,18 @@
     <string name="block_io_values">Read: %1$s · Write: %2$s</string>
     <string name="network_graph_description">Network traffic history: incoming and outgoing</string>
     <string name="block_graph_description">Block storage history: read and write</string>
+    <string name="logs">Logs</string>
+    <string name="logs_loading">Loading containers…</string>
+    <string name="logs_no_containers">TrueNAS returned no containers for this app.</string>
+    <string name="refresh_logs">Reload logs</string>
+    <string name="log_container_value">%1$s · %2$s</string>
+    <string name="logs_connecting">Connecting to %1$s logs…</string>
+    <string name="logs_live">Live logs · %1$s</string>
+    <string name="logs_unavailable">Logs unavailable: %1$s</string>
+    <string name="container_exited">Exited</string>
+    <string name="container_crashed">Crashed</string>
+    <string name="container_starting">Starting</string>
+    <string name="container_created">Created</string>
     <string name="no_apps">No apps returned by TrueNAS.</string>
     <string name="no_alerts">No active alerts.</string>
     <string name="dismiss">Dismiss</string>
@@ -132,7 +144,7 @@
     <string name="confirm">Confirm</string>
     <string name="not_configured">For HTTP, enter the server URL, username and password. For HTTPS, also enter credentials: an API key is preferred, or use the password fallback.</string>
     <string name="privacy_note">The password and API key are encrypted with Android Keystore. HTTP does not encrypt network traffic: use it only on a trusted local network or through VPN. HTTPS remains available for encrypted connections.</string>
-    <string name="version_label">Version 1.4.0</string>
+    <string name="version_label">Version 1.5.0</string>
     <string name="active_apps">%1$d running / %2$d total</string>
     <string name="active_alerts">%1$d active alerts</string>
     <string name="hours_short">%1$dh %2$dm</string>
